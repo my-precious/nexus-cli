@@ -135,6 +135,7 @@ stop_auto_monitor() {
 
 # 启动所有实例
 start_all_instances() {
+    echo '' > ~/.nexus/proof_submissions.count
     print_title "批量启动 Nexus CLI 实例"
     
     print_message $BLUE "配置信息:"

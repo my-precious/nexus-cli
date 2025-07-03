@@ -48,7 +48,9 @@ pub struct Event {
     pub msg: String,
     pub timestamp: String,
     pub event_type: EventType,
+    pub successful_submissions: u64,  // 添加成功提交计数
 }
+
 impl Event {
     pub fn new(kind: Worker, msg: String, event_type: EventType) -> Self {
         Self {
@@ -56,6 +58,7 @@ impl Event {
             msg,
             timestamp: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
             event_type,
+            successful_submissions: 0,  // 初始化计数为0
         }
     }
 
@@ -339,9 +342,11 @@ pub async fn submit_proofs(
                                 Ok(_) => {
                                     // Mark task as completed
                                     successful_tasks.insert(task.task_id.clone()).await;
+                                    let successful_count = successful_tasks.count().await;
                                     let msg = format!(
-                                        "Successfully submitted proof for task {}",
-                                        task.task_id
+                                        "Successfully submitted proof for task {} (Total successful submissions: {})",
+                                        task.task_id,
+                                        successful_count
                                     );
                                     let _ = event_sender
                                         .send(Event::proof_submitter(msg, EventType::Success))

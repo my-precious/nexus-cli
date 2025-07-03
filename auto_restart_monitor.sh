@@ -444,8 +444,8 @@ show_monitor_status() {
                     update_instance_state $instance_id "success_task_count" "$((success_count + 1))"
                 fi
                 
-                local success_count=$(jq -r '.success_task_count // 0' "$state_file" 2>/dev/null || echo 0)
-                echo "  实例 $instance_id: $status (重启次数: $restart_count, Performance: 0 计数: $perf_count, 成功任务数: $success_count) $log"
+                local success_count=$(cat ~/.nexus/proof_submissions.count | grep $instance_id | awk -F ':' '{print $2}' | tr -d '】')
+                echo "  实例 $instance_id: $status (重启次数: $restart_count, Performance: 0 计数: $perf_count, 成功任务数:$success_count) $log"
             else
                 echo "  实例 $instance_id: 未监控"
             fi

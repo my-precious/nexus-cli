@@ -36,4 +36,10 @@ impl TaskCache {
         }
         queue.push_back(task_id);
     }
+
+    /// Returns the number of tasks in the queue.
+    pub async fn count(&self) -> usize {
+        let queue = self.inner.lock().await;
+        queue.len()
+    }
 }
