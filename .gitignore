@@ -74,3 +74,5 @@ target/
 .DS_Store
 
 .idea
+monitor_state/*.json
+.gitignore
