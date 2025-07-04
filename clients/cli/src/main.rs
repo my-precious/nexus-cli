@@ -20,12 +20,14 @@ mod task;
 mod task_cache;
 mod ui;
 mod workers;
+mod node_list;
 
 use crate::config::{Config, get_config_path};
 use crate::environment::Environment;
 use crate::orchestrator::{Orchestrator, OrchestratorClient};
 use crate::prover_runtime::{start_anonymous_workers, start_authenticated_workers};
 use crate::register::{register_node, register_user};
+use crate::node_list::NodeList;
 use clap::{ArgAction, Parser, Subcommand};
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
@@ -34,8 +36,131 @@ use crossterm::{
 };
 use ed25519_dalek::SigningKey;
 use ratatui::{Terminal, backend::CrosstermBackend};
-use std::{error::Error, io};
+use std::{error::Error, io, sync::Arc};
 use tokio::sync::broadcast;
+use tokio::task::JoinSet;
+
+// Fixed line display manager
+#[derive(Debug)]
+struct FixedLineDisplay {
+    #[allow(dead_code)]
+    max_lines: usize,
+    node_lines: Arc<tokio::sync::RwLock<std::collections::HashMap<u64, String>>>,
+    last_render_hash: Arc<tokio::sync::Mutex<u64>>,
+    proof_counts: Arc<tokio::sync::RwLock<std::collections::HashMap<u64, u64>>>,
+    total_proofs: Arc<tokio::sync::RwLock<u64>>,
+}
+
+impl FixedLineDisplay {
+    fn new(max_lines: usize) -> Self {
+        Self {
+            max_lines,
+            node_lines: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::with_capacity(max_lines))),
+            last_render_hash: Arc::new(tokio::sync::Mutex::new(0)),
+            proof_counts: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            total_proofs: Arc::new(tokio::sync::RwLock::new(0)),
+        }
+    }
+
+    async fn increment_proof_count(&self, node_id: u64) {
+        let mut counts = self.proof_counts.write().await;
+        let count = counts.entry(node_id).or_insert(0);
+        *count += 1;
+
+        let mut total = self.total_proofs.write().await;
+        *total += 1;
+    }
+
+    async fn update_node_status(&self, node_id: u64, status: String) {
+        // 检查是否是提交成功的状态
+        if status.contains("Proof submitted") || status.contains("Successfully submitted proof") {
+            self.increment_proof_count(node_id).await;
+        }
+
+        let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
+        let formatted_status = format!("[{}] {}", timestamp, status);
+
+        let needs_update = {
+            let lines = self.node_lines.read().await;
+            lines.get(&node_id) != Some(&formatted_status)
+        };
+
+        if needs_update {
+            {
+                let mut lines = self.node_lines.write().await;
+                lines.insert(node_id, formatted_status.clone());
+            }
+            self.render_display_optimized().await;
+        }
+    }
+
+    async fn render_display_optimized(&self) {
+        let lines = self.node_lines.read().await;
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for (id, status) in lines.iter() {
+            std::hash::Hasher::write_u64(&mut hasher, *id);
+            std::hash::Hasher::write(&mut hasher, status.as_bytes());
+        }
+        let current_hash = std::hash::Hasher::finish(&mut hasher);
+
+        let mut last_hash = self.last_render_hash.lock().await;
+        if *last_hash != current_hash {
+            *last_hash = current_hash;
+            drop(last_hash);
+            self.render_display(&lines).await;
+        }
+    }
+
+    async fn render_display(&self, lines: &std::collections::HashMap<u64, String>) {
+        // Clear screen and move to top
+        print!("\x1b[2J\x1b[H");
+
+        let current_time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+        // Title
+        println!("🚀 Nexus Batch Mining Monitor - {}", current_time);
+        println!("═══════════════════════════════════════");
+
+        // Statistics
+        let total_nodes = lines.len();
+        let successful_count = lines.values()
+            .filter(|status| status.contains("✅"))
+            .count();
+        let failed_count = lines.values()
+            .filter(|status| status.contains("❌"))
+            .count();
+        let active_count = lines.values()
+            .filter(|status| status.contains("🔄") || status.contains("⚠️"))
+            .count();
+
+        // 获取总证明数
+        let total_proofs = *self.total_proofs.read().await;
+
+        println!("📊 Status: {} Total | {} Active | {} Success | {} Failed",
+                 total_nodes, active_count, successful_count, failed_count);
+        println!("🎯 Total Proofs Submitted: {}", total_proofs);
+
+        println!("───────────────────────────────────────");
+
+        // Display sorted by node ID with proof counts
+        let mut sorted_lines: Vec<_> = lines.iter().collect();
+        sorted_lines.sort_by_key(|(id, _)| *id);
+
+        let proof_counts = self.proof_counts.read().await;
+        for (node_id, status) in sorted_lines {
+            let proof_count = proof_counts.get(node_id).copied().unwrap_or(0);
+            println!("Node-{} (Proofs: {}): {}", node_id, proof_count, status);
+        }
+
+        println!("───────────────────────────────────────");
+        println!("💡 Press Ctrl+C to stop all miners");
+
+        // Force output flush
+        use std::io::Write;
+        std::io::stdout().flush().unwrap();
+    }
+}
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -61,6 +186,24 @@ enum Command {
         /// Maximum number of threads to use for proving.
         #[arg(long = "max-threads", value_name = "MAX_THREADS")]
         max_threads: Option<u32>,
+    },
+    /// Start multiple provers from node list file
+    BatchFile {
+        /// Path to node list file (.txt)
+        #[arg(long, value_name = "FILE_PATH")]
+        file: String,
+
+        /// Delay between starting each node (seconds)
+        #[arg(long, default_value = "10")]
+        start_delay: u64,
+
+        /// Maximum number of concurrent nodes
+        #[arg(long, default_value = "50")]
+        max_concurrent: usize,
+
+        /// Enable verbose error logging
+        #[arg(long)]
+        verbose: bool,
     },
     /// Register a new user
     RegisterUser {
@@ -94,6 +237,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
             headless,
             max_threads,
         } => start(node_id, environment, config_path, headless, max_threads).await,
+        Command::BatchFile {
+            file,
+            start_delay,
+            max_concurrent,
+            verbose,
+        } => {
+            if verbose {
+            }
+            start_batch_from_file_with_pool(&file, Environment::default(), start_delay, max_concurrent, verbose).await
+        },
         Command::Logout => {
             println!("Logging out and clearing node configuration file...");
             Config::clear_node_config(&config_path).map_err(Into::into)
@@ -244,5 +397,154 @@ async fn start(
         let _ = handle.await;
     }
     println!("Nexus CLI application exited successfully.");
+    Ok(())
+}
+
+/// Monitor tasks with infinite retry (no replacement)
+async fn monitor_infinite_retry(
+    mut join_set: JoinSet<(u64, Result<(), Box<dyn Error + Send + Sync>>)>,
+    display: Arc<FixedLineDisplay>,
+) {
+    tokio::pin! {
+        let ctrl_c = tokio::signal::ctrl_c();
+    }
+
+    loop {
+        tokio::select! {
+            // Handle completed tasks (should not happen with infinite retry)
+            Some(result) = join_set.join_next() => {
+                if let Ok((node_id, prover_result)) = result {
+                    match prover_result {
+                        Ok(_) => {
+                            println!("🎯 [Node-{}] Prover completed successfully (unexpected)", node_id);
+                            display.update_node_status(node_id, "✅ Completed".to_string()).await;
+                        },
+                        Err(e) => {
+                            println!("❌ [Node-{}] Prover exited unexpectedly: {}", node_id, e);
+                            display.update_node_status(node_id, format!("❌ Unexpected exit: {}", e)).await;
+                        }
+                    }
+                }
+            }
+
+            // Handle shutdown signal
+            _ = &mut ctrl_c => {
+                println!("🛑 Shutdown signal received. Stopping all provers...");
+                join_set.abort_all();
+                break;
+            }
+
+            // Exit monitoring if all tasks unexpectedly exit
+            else => {
+                println!("⚠️ All nodes have exited unexpectedly.");
+                break;
+            }
+        }
+    }
+
+    println!("✅ All provers stopped.");
+}
+
+async fn start_batch_from_file_with_pool(
+    file_path: &str,
+    env: Environment,
+    start_delay: u64,
+    max_concurrent: usize,
+    _verbose: bool,
+) -> Result<(), Box<dyn Error>> {
+    // Load node list
+    let node_list = NodeList::load_from_file(file_path)?;
+    let all_nodes = node_list.node_ids().to_vec();
+
+    if all_nodes.is_empty() {
+        return Err("Node list is empty".into());
+    }
+
+    let actual_concurrent = std::cmp::min(max_concurrent, all_nodes.len());
+
+    println!("🚀 Starting batch processing from file: {}", file_path);
+    println!("📊 Total nodes: {}", all_nodes.len());
+    println!("🔄 Max concurrent: {}", actual_concurrent);
+    println!("⏱️  Start delay: {}s", start_delay);
+    println!("🌍 Environment: {:?}", env);
+    println!("♾️  Mode: Infinite retry (no node replacement)");
+    println!("═══════════════════════════════════════");
+
+    // Create display manager
+    let display = Arc::new(FixedLineDisplay::new(actual_concurrent));
+
+    // Initial display
+    display.render_display(&std::collections::HashMap::new()).await;
+
+    let mut join_set = JoinSet::new();
+
+    // Start concurrent nodes
+    for &node_id in all_nodes.iter().take(actual_concurrent) {
+        let disp = display.clone();
+        let env = env.clone();
+
+        join_set.spawn(async move {
+            let display_callback = {
+                let disp = disp.clone();
+                move |status: String| {
+                    let disp = disp.clone();
+                    let node_id = node_id;
+                    tokio::spawn(async move {
+                        disp.update_node_status(node_id, status).await;
+                    });
+                }
+            };
+
+            // Create a signing key for the prover
+            let mut csprng = rand_core::OsRng;
+            let signing_key: SigningKey = SigningKey::generate(&mut csprng);
+            let orchestrator_client = OrchestratorClient::new(env);
+            let (shutdown_sender, _) = broadcast::channel(1);
+
+            // Start the worker
+            let (mut event_receiver, join_handles) = start_authenticated_workers(
+                node_id,
+                signing_key,
+                orchestrator_client,
+                1, // Single worker per node
+                shutdown_sender.subscribe(),
+                env,
+                node_id.to_string(),
+            ).await;
+
+            // Process events
+            let mut shutdown_receiver = shutdown_sender.subscribe();
+            let result = async {
+                loop {
+                    tokio::select! {
+                        Some(event) = event_receiver.recv() => {
+                            display_callback(event.to_string());
+                        }
+                        _ = shutdown_receiver.recv() => {
+                            break;
+                        }
+                    }
+                }
+                Ok(())
+            }.await;
+
+            // Wait for all handles
+            for handle in join_handles {
+                let _ = handle.await;
+            }
+
+            (node_id, result)
+        });
+
+        tokio::time::sleep(std::time::Duration::from_secs(start_delay)).await;
+    }
+
+    println!("✅ All {} provers started with infinite retry!", actual_concurrent);
+    println!("📋 Unused nodes: {}", all_nodes.len() - actual_concurrent);
+    println!("🛑 Press Ctrl+C to stop all provers");
+
+    // Monitor tasks
+    monitor_infinite_retry(join_set, display).await;
+
     Ok(())
 }
