@@ -74,3 +74,4 @@ target/
 .DS_Store
 
 .idea
+shell/monitor_state/*.json
