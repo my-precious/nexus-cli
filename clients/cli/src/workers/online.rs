@@ -21,6 +21,12 @@ use sha3::{Digest, Keccak256};
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
+use std::fs;
+use std::io;
+use std::path::PathBuf;
+use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
+use log::{debug};
 
 /// State for managing task fetching behavior
 pub struct TaskFetchState {
@@ -532,7 +538,7 @@ async fn fetch_new_tasks_batch(
     Ok(new_tasks)
 }
 
-/// Submits proofs to the orchestrator
+/// Submit proofs to the orchestrator
 pub async fn submit_proofs(
     signing_key: SigningKey,
     orchestrator: Box<dyn Orchestrator>,
@@ -541,6 +547,7 @@ pub async fn submit_proofs(
     event_sender: mpsc::Sender<Event>,
     mut shutdown: broadcast::Receiver<()>,
     successful_tasks: TaskCache,
+    node_id: u64,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut completed_count = 0;
@@ -560,13 +567,14 @@ pub async fn submit_proofs(
                                 num_workers,
                                 &event_sender,
                                 &successful_tasks,
+                                node_id,
                             ).await {
                                 if success {
                                     completed_count += 1;
                                 }
                             }
 
-                            // Check if it's time to report stats (avoid timer starvation)
+                            // Check if it's time to report stats
                             if last_stats_time.elapsed() >= stats_interval {
                                 report_performance_stats(&event_sender, completed_count, last_stats_time).await;
                                 completed_count = 0;
@@ -578,7 +586,6 @@ pub async fn submit_proofs(
                 }
 
                 _ = tokio::time::sleep(stats_interval) => {
-                    // Fallback timer in case there's no activity
                     report_performance_stats(&event_sender, completed_count, last_stats_time).await;
                     completed_count = 0;
                     last_stats_time = std::time::Instant::now();
@@ -628,6 +635,7 @@ async fn process_proof_submission(
     num_workers: usize,
     event_sender: &mpsc::Sender<Event>,
     successful_tasks: &TaskCache,
+    node_id: u64,
 ) -> Option<bool> {
     // Check for duplicate submissions
     if successful_tasks.contains(&task.task_id).await {
@@ -638,7 +646,7 @@ async fn process_proof_submission(
         let _ = event_sender
             .send(Event::proof_submitter(msg, crate::events::EventType::Error))
             .await;
-        return None; // Skip this task
+        return None;
     }
 
     // Serialize proof
@@ -657,7 +665,7 @@ async fn process_proof_submission(
         .await
     {
         Ok(_) => {
-            handle_submission_success(&task, event_sender, successful_tasks).await;
+            handle_submission_success(&task, event_sender, successful_tasks, node_id).await;
             Some(true)
         }
         Err(e) => {
@@ -672,8 +680,18 @@ async fn handle_submission_success(
     task: &Task,
     event_sender: &mpsc::Sender<Event>,
     successful_tasks: &TaskCache,
+    node_id: u64,
 ) {
     successful_tasks.insert(task.task_id.clone()).await;
+    
+    // 更新提交计数
+    if let Err(e) = update_submission_count(node_id).await {
+        let msg = format!("Failed to update submission count: {}", e);
+        let _ = event_sender
+            .send(Event::proof_submitter(msg, crate::events::EventType::Error))
+            .await;
+    }
+
     let msg = "📤 Proof submitted".to_string();
     let _ = event_sender
         .send(Event::proof_submitter_with_level(
@@ -682,6 +700,58 @@ async fn handle_submission_success(
             LogLevel::Info,
         ))
         .await;
+}
+
+/// 更新提交计数
+async fn update_submission_count(node_id: u64) -> io::Result<()> {
+    let count_file = get_count_file_path();
+    
+    // 确保目录存在
+    if let Some(parent) = count_file.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    
+    // 读取当前内容
+    let content = if count_file.exists() {
+        fs::read_to_string(&count_file)?
+    } else {
+        String::new()
+    };
+
+    // 解析现有计数
+    let mut counts = HashMap::new();
+    for line in content.lines() {
+        if let Some(inner) = line.strip_prefix('【').and_then(|s| s.strip_suffix('】')) {
+            if let Some((id, count_str)) = inner.split_once(": ") {
+                if let Ok(count) = count_str.parse::<u64>() {
+                    counts.insert(id.to_string(), count);
+                }
+            }
+        }
+    }
+
+    // 更新计数
+    let node_id_str = node_id.to_string();
+    let count = counts.entry(node_id_str).or_insert(0);
+    *count += 1;
+
+    // 写入新的内容
+    let mut output = String::new();
+    for (id, count) in &counts {
+        output.push_str(&format!("【{}: {}】\n", id, count));
+    }
+
+    fs::write(count_file, output)
+}
+
+/// 获取计数文件路径
+fn get_count_file_path() -> PathBuf {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let path = home.join(".nexus").join("proof_submissions.count");
+    debug!("计数文件路径: {:?}", path);
+    path
 }
 
 /// Handle proof submission errors
@@ -705,4 +775,9 @@ async fn handle_submission_error(
     let _ = event_sender
         .send(Event::proof_submitter(msg, crate::events::EventType::Error))
         .await;
+}
+
+#[derive(Serialize, Deserialize, Default)]
+struct SubmissionCounts {
+    counts: HashMap<String, u64>,
 }
