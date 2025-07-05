@@ -7,26 +7,42 @@
 # 配置区域 - 请根据需要修改以下配置
 # =============================================================================
 
-# 预定义的 node_id 列表
-# 请将您的实际 node_id 替换到这里
-NODE_IDS=(
-    "9720054"    # 实例 1
-    "9750029"    # 实例 2
-    "9817739"    # 实例 3
-    "9877857"    # 实例 4
-    "9907494"    # 实例 5
-    "9937641"    # 实例 6
-    "10087109"
-    "10176973"
-    "10177075"
-    "10202222"
-)
+# Node ID 配置文件路径
+NODE_IDS_FILE="$HOME/.nexus/node_ids.conf"
+
+# 从配置文件加载 node_id 列表
+load_node_ids() {
+    local node_ids=()
+    
+    if [[ ! -f "$NODE_IDS_FILE" ]]; then
+        echo "错误: 找不到 Node ID 配置文件: $NODE_IDS_FILE" >&2
+        echo "请创建配置文件或检查文件路径" >&2
+        exit 1
+    fi
+    
+    # 读取配置文件，忽略注释行和空行
+    while IFS= read -r line; do
+        # 跳过空行和注释行
+        if [[ -n "$line" && ! "$line" =~ ^[[:space:]]*# ]]; then
+            # 去除前后空格
+            line=$(echo "$line" | xargs)
+            if [[ -n "$line" ]]; then
+                node_ids+=("$line")
+            fi
+        fi
+    done < "$NODE_IDS_FILE"
+    
+    echo "${node_ids[@]}"
+}
+
+# 加载 node_id 列表
+NODE_IDS=($(load_node_ids))
 
 # 其他配置参数
-MAX_THREADS=4          # 每个实例的最大线程数
+MAX_THREADS=2          # 每个实例的最大线程数
 HEADLESS=true          # 是否使用无头模式
 ENVIRONMENT="testnet"   # 环境设置
-START_DELAY=10          # 实例启动间隔（秒）
+START_DELAY=4          # 实例启动间隔（秒）
 
 # 脚本路径配置
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -268,7 +284,11 @@ show_all_status() {
 show_config() {
     print_title "当前配置信息"
     
-    print_message $BLUE "Node ID 列表:"
+    print_message $BLUE "配置文件路径:"
+    echo "  $NODE_IDS_FILE"
+    
+    echo
+    print_message $BLUE "Node ID 列表 (共 ${#NODE_IDS[@]} 个):"
     for i in "${!NODE_IDS[@]}"; do
         local instance_id=$((i + 1))
         local node_id="${NODE_IDS[$i]}"
@@ -292,6 +312,7 @@ interactive_config() {
     
     read -p "是否要添加新的 Node ID? (y/n): " add_new
     if [[ "$add_new" =~ ^[Yy]$ ]]; then
+        local new_node_ids=()
         while true; do
             read -p "请输入新的 Node ID (纯数字，回车结束): " new_node_id
             if [[ -z "$new_node_id" ]]; then
@@ -299,12 +320,25 @@ interactive_config() {
             fi
             
             if [[ "$new_node_id" =~ ^[0-9]+$ ]]; then
-                NODE_IDS+=("$new_node_id")
+                new_node_ids+=("$new_node_id")
                 print_message $GREEN "✓ 已添加 Node ID: $new_node_id"
             else
                 print_message $RED "✗ 无效格式，Node ID 必须是纯数字"
             fi
         done
+        
+        # 将新的 Node ID 写入配置文件
+        if [[ ${#new_node_ids[@]} -gt 0 ]]; then
+            print_message $CYAN "正在更新配置文件..."
+            for node_id in "${new_node_ids[@]}"; do
+                echo "$node_id" >> "$NODE_IDS_FILE"
+            done
+            print_message $GREEN "✓ 配置文件已更新"
+            
+            # 重新加载配置
+            NODE_IDS=($(load_node_ids))
+            print_message $GREEN "✓ 配置已重新加载，当前共有 ${#NODE_IDS[@]} 个 Node ID"
+        fi
     fi
     
     echo
@@ -338,6 +372,7 @@ ${YELLOW}命令:${NC}
   restart     批量重启所有实例
   status      显示所有实例状态
   config      显示当前配置信息
+  edit-config 编辑 Node ID 配置文件
   interactive 交互式配置 Node ID
   monitor     管理自动重启监控服务
   help        显示此帮助信息
@@ -355,14 +390,16 @@ ${YELLOW}示例:${NC}
   $0 restart            # 重启所有实例
   $0 status             # 查看状态
   $0 config             # 查看配置
+  $0 edit-config        # 编辑配置文件
   $0 monitor status     # 查看监控状态
   $0 monitor watch      # 实时监控状态
   $0 interactive        # 交互式配置
 
 ${YELLOW}配置说明:${NC}
-  - 编辑此脚本顶部的 NODE_IDS 数组来配置您的 Node ID
+  - Node ID 配置存储在外部文件: node_ids.conf
+  - 每行一个 Node ID，支持注释（以 # 开头）
   - 可以通过修改其他配置变量来调整启动参数
-  - 支持交互式添加新的 Node ID
+  - 支持交互式添加新的 Node ID（会自动更新配置文件）
   - 自动重启监控会在检测到连续5分钟'Performance: 0'时重启实例
 
 ${YELLOW}注意事项:${NC}
@@ -400,6 +437,20 @@ case "$1" in
         ;;
     "config")
         show_config
+        ;;
+    "edit-config")
+        print_message $CYAN "正在打开配置文件进行编辑..."
+        if command -v nano >/dev/null 2>&1; then
+            nano "$NODE_IDS_FILE"
+        elif command -v vim >/dev/null 2>&1; then
+            vim "$NODE_IDS_FILE"
+        elif command -v vi >/dev/null 2>&1; then
+            vi "$NODE_IDS_FILE"
+        else
+            print_message $RED "错误: 找不到可用的文本编辑器 (nano, vim, vi)"
+            print_message $YELLOW "请手动编辑配置文件: $NODE_IDS_FILE"
+        fi
+        print_message $GREEN "配置文件编辑完成"
         ;;
     "interactive")
         interactive_config
