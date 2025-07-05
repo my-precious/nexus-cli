@@ -214,6 +214,7 @@ impl AdaptiveConfig {
         self.success_count.store(0, std::sync::atomic::Ordering::Relaxed);
         self.failure_count.store(0, std::sync::atomic::Ordering::Relaxed);
     }
+}
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
