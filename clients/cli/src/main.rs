@@ -49,6 +49,7 @@ struct FixedLineDisplay {
     last_render_hash: Arc<tokio::sync::Mutex<u64>>,
     proof_counts: Arc<tokio::sync::RwLock<std::collections::HashMap<u64, u64>>>,
     total_proofs: Arc<tokio::sync::RwLock<u64>>,
+    start_time: chrono::DateTime<chrono::Local>,
 }
 
 impl FixedLineDisplay {
@@ -59,6 +60,7 @@ impl FixedLineDisplay {
             last_render_hash: Arc::new(tokio::sync::Mutex::new(0)),
             proof_counts: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             total_proofs: Arc::new(tokio::sync::RwLock::new(0)),
+            start_time: chrono::Local::now(),
         }
     }
 
@@ -77,8 +79,9 @@ impl FixedLineDisplay {
             self.increment_proof_count(node_id).await;
         }
 
-        let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
-        let formatted_status = format!("[{}] {}", timestamp, status);
+        // 移除额外的时间戳，因为Event的Display实现已经包含了时间戳
+        // 直接使用原始状态字符串
+        let formatted_status = status;
 
         let needs_update = {
             let lines = self.node_lines.read().await;
@@ -116,10 +119,10 @@ impl FixedLineDisplay {
         // Clear screen and move to top
         print!("\x1b[2J\x1b[H");
 
-        let current_time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let start_time_str = self.start_time.format("%Y-%m-%d %H:%M:%S").to_string();
 
         // Title
-        println!("🚀 Nexus Batch Mining Monitor - {}", current_time);
+        println!("🚀 Nexus Batch Mining Monitor - {}", start_time_str);
         println!("═══════════════════════════════════════");
 
         // Statistics
