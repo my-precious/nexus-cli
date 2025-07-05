@@ -21,6 +21,7 @@ pub enum NodeListError {
     DuplicateNodeId(u64),
 }
 
+#[derive(Debug)]
 pub struct NodeList {
     pub node_ids: Vec<u64>,
 }

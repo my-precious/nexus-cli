@@ -7,7 +7,8 @@
 
 use crate::consts::prover::{
     BACKOFF_DURATION, BATCH_SIZE, LOW_WATER_MARK, MAX_404S_BEFORE_GIVING_UP, QUEUE_LOG_INTERVAL,
-    TASK_QUEUE_SIZE,
+    TASK_QUEUE_SIZE, MIN_BACKOFF_DURATION, MAX_BACKOFF_DURATION, MAX_CONSECUTIVE_EMPTY_FETCHES,
+    FORCE_FETCH_TIMEOUT,
 };
 use crate::error_classifier::{ErrorClassifier, LogLevel};
 use crate::events::Event;
@@ -35,6 +36,8 @@ pub struct TaskFetchState {
     last_queue_log_time: std::time::Instant,
     queue_log_interval: Duration,
     error_classifier: ErrorClassifier,
+    consecutive_empty_fetches: u32,
+    last_successful_fetch: Option<std::time::Instant>,
 }
 
 impl TaskFetchState {
@@ -42,10 +45,12 @@ impl TaskFetchState {
         Self {
             last_fetch_time: std::time::Instant::now()
                 - Duration::from_millis(BACKOFF_DURATION + 1000), // Allow immediate first fetch
-            backoff_duration: Duration::from_millis(BACKOFF_DURATION), // Start with 30 second backoff
+            backoff_duration: Duration::from_millis(BACKOFF_DURATION), // Start with optimized backoff
             last_queue_log_time: std::time::Instant::now(),
             queue_log_interval: Duration::from_millis(QUEUE_LOG_INTERVAL), // Log queue status every 30 seconds
             error_classifier: ErrorClassifier::new(),
+            consecutive_empty_fetches: 0,
+            last_successful_fetch: None,
         }
     }
 
@@ -56,6 +61,13 @@ impl TaskFetchState {
 
     pub fn should_fetch(&self, tasks_in_queue: usize) -> bool {
         tasks_in_queue < LOW_WATER_MARK && self.last_fetch_time.elapsed() >= self.backoff_duration
+    }
+
+    pub fn should_force_fetch(&self) -> bool {
+        self.consecutive_empty_fetches >= MAX_CONSECUTIVE_EMPTY_FETCHES || 
+        self.last_successful_fetch
+            .map(|t| t.elapsed() > Duration::from_millis(FORCE_FETCH_TIMEOUT))
+            .unwrap_or(true)
     }
 
     pub fn record_fetch_attempt(&mut self) {
@@ -72,16 +84,32 @@ impl TaskFetchState {
 
     pub fn increase_backoff_for_rate_limit(&mut self) {
         self.backoff_duration = std::cmp::min(
-            self.backoff_duration * 2,
-            Duration::from_millis(BACKOFF_DURATION * 2),
+            self.backoff_duration * 3 / 2,
+            Duration::from_millis(MAX_BACKOFF_DURATION),
         );
     }
 
     pub fn increase_backoff_for_error(&mut self) {
         self.backoff_duration = std::cmp::min(
-            self.backoff_duration * 2,
-            Duration::from_millis(BACKOFF_DURATION * 2),
+            self.backoff_duration * 3 / 2,
+            Duration::from_millis(MAX_BACKOFF_DURATION),
         );
+    }
+
+    pub fn decrease_backoff_on_success(&mut self) {
+        self.backoff_duration = std::cmp::max(
+            self.backoff_duration * 2 / 3,
+            Duration::from_millis(MIN_BACKOFF_DURATION),
+        );
+    }
+
+    pub fn record_empty_fetch(&mut self) {
+        self.consecutive_empty_fetches += 1;
+    }
+
+    pub fn record_successful_fetch(&mut self) {
+        self.consecutive_empty_fetches = 0;
+        self.last_successful_fetch = Some(std::time::Instant::now());
     }
 }
 
@@ -110,8 +138,23 @@ pub async fn fetch_prover_tasks(
                     log_queue_status(&event_sender, tasks_in_queue, &state).await;
                 }
 
+                // 检查是否需要强制获取
+                let should_fetch = state.should_fetch(tasks_in_queue) || state.should_force_fetch();
+
                 // Attempt fetch if conditions are met
-                if state.should_fetch(tasks_in_queue) {
+                if should_fetch {
+                    // 如果是强制获取，重置退避时间
+                    if state.should_force_fetch() && !state.should_fetch(tasks_in_queue) {
+                        state.reset_backoff();
+                        let _ = event_sender
+                            .send(Event::task_fetcher_with_level(
+                                "🔄 Force fetching due to health check".to_string(),
+                                crate::events::EventType::Refresh,
+                                LogLevel::Info,
+                            ))
+                            .await;
+                    }
+                    
                     if let Err(should_return) = attempt_task_fetch(
                         &*orchestrator_client,
                         &node_id,
@@ -167,6 +210,7 @@ async fn attempt_task_fetch(
             Ok(tasks) => {
                 // Record successful fetch attempt timing
                 state.record_fetch_attempt();
+                state.record_successful_fetch();
                 handle_fetch_success(tasks, sender, event_sender, recent_tasks, state).await
             }
             Err(e) => {
@@ -202,14 +246,32 @@ async fn log_queue_status(
     let time_since_last = state.last_fetch_time.elapsed();
     let backoff_secs = state.backoff_duration.as_secs();
 
+    // 根据队列状态调整日志级别
+    let log_level = if tasks_in_queue == 0 {
+        LogLevel::Warn // 队列为空时提升日志级别
+    } else if tasks_in_queue < LOW_WATER_MARK / 2 {
+        LogLevel::Info // 队列很低时使用Info级别
+    } else {
+        LogLevel::Debug
+    };
+
     let message = if state.should_fetch(tasks_in_queue) {
         format!("⚡ Queue low: {} tasks, ready to fetch", tasks_in_queue)
     } else {
         let time_since_secs = time_since_last.as_secs();
+        let remaining_time = backoff_secs.saturating_sub(time_since_secs);
+        
+        // 添加健康状态信息
+        let health_info = if state.consecutive_empty_fetches > 0 {
+            format!(" ({} empty fetches)", state.consecutive_empty_fetches)
+        } else {
+            String::new()
+        };
+        
         format!(
-            "⚡ Queue low: {} tasks, waiting {}s more (retry every {}s)",
+            "⚡ Queue low: {} tasks, waiting {}s more (retry every {}s){health_info}",
             tasks_in_queue,
-            backoff_secs.saturating_sub(time_since_secs),
+            remaining_time,
             backoff_secs
         )
     };
@@ -218,7 +280,7 @@ async fn log_queue_status(
         .send(Event::task_fetcher_with_level(
             message,
             crate::events::EventType::Refresh,
-            LogLevel::Debug,
+            log_level,
         ))
         .await;
 }
@@ -240,6 +302,12 @@ async fn handle_fetch_success(
         process_fetched_tasks(tasks, sender, event_sender, recent_tasks).await?;
 
     log_fetch_results(added_count, duplicate_count, sender, event_sender, state).await;
+    
+    // 成功获取任务时减少退避时间
+    if added_count > 0 {
+        state.decrease_backoff_on_success();
+    }
+    
     Ok(())
 }
 
@@ -250,15 +318,28 @@ async fn handle_empty_task_response(
     state: &mut TaskFetchState,
 ) {
     let current_queue_level = TASK_QUEUE_SIZE - sender.capacity();
+    
+    // 记录空获取
+    state.record_empty_fetch();
+    
     let msg = format!(
-        "💤 No tasks available (queue: {} tasks)",
-        current_queue_level
+        "💤 No tasks available (queue: {} tasks, empty fetches: {})",
+        current_queue_level,
+        state.consecutive_empty_fetches
     );
+    
+    // 根据连续空获取次数调整日志级别
+    let log_level = if state.consecutive_empty_fetches >= 3 {
+        LogLevel::Warn
+    } else {
+        LogLevel::Info
+    };
+    
     let _ = event_sender
         .send(Event::task_fetcher_with_level(
             msg,
             crate::events::EventType::Refresh,
-            LogLevel::Info,
+            log_level,
         ))
         .await;
 
@@ -363,14 +444,19 @@ async fn handle_all_duplicates(
     event_sender: &mpsc::Sender<Event>,
     state: &mut TaskFetchState,
 ) {
-    // All duplicates - significant backoff increase
+    // 记录空获取（因为所有任务都是重复的，相当于没有获取到新任务）
+    state.record_empty_fetch();
+    
+    // 更温和的退避增加
     state.increase_backoff_for_error();
+    
     let _ = event_sender
         .send(Event::task_fetcher_with_level(
             format!(
-                "🔄 All {} tasks were duplicates - backing off for {}s",
+                "🔄 All {} tasks were duplicates - backing off for {}s (empty fetches: {})",
                 duplicate_count,
-                state.backoff_duration.as_secs()
+                state.backoff_duration.as_secs(),
+                state.consecutive_empty_fetches
             ),
             crate::events::EventType::Refresh,
             LogLevel::Warn,
@@ -780,4 +866,64 @@ async fn handle_submission_error(
 #[derive(Serialize, Deserialize, Default)]
 struct SubmissionCounts {
     counts: HashMap<String, u64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn test_task_fetch_state_optimization() {
+        let mut state = TaskFetchState::new();
+        
+        // 测试初始状态
+        assert_eq!(state.consecutive_empty_fetches, 0);
+        assert!(state.last_successful_fetch.is_none());
+        
+        // 测试空获取记录
+        state.record_empty_fetch();
+        assert_eq!(state.consecutive_empty_fetches, 1);
+        
+        // 测试成功获取记录
+        state.record_successful_fetch();
+        assert_eq!(state.consecutive_empty_fetches, 0);
+        assert!(state.last_successful_fetch.is_some());
+        
+        // 测试强制获取条件
+        for _ in 0..MAX_CONSECUTIVE_EMPTY_FETCHES {
+            state.record_empty_fetch();
+        }
+        assert!(state.should_force_fetch());
+    }
+
+    #[test]
+    fn test_backoff_optimization() {
+        let mut state = TaskFetchState::new();
+        let initial_backoff = state.backoff_duration;
+        
+        // 测试错误时退避增长（更温和）
+        state.increase_backoff_for_error();
+        let after_error = state.backoff_duration;
+        assert!(after_error > initial_backoff);
+        assert!(after_error < initial_backoff * 2); // 应该小于2倍
+        
+        // 测试成功时退避减少
+        state.decrease_backoff_on_success();
+        let after_success = state.backoff_duration;
+        assert!(after_success < after_error);
+        assert!(after_success >= Duration::from_millis(MIN_BACKOFF_DURATION));
+    }
+
+    #[test]
+    fn test_constants_optimization() {
+        // 验证优化后的常量值
+        assert_eq!(BATCH_SIZE, 33); // TASK_QUEUE_SIZE / 3
+        assert_eq!(LOW_WATER_MARK, 33); // TASK_QUEUE_SIZE / 3
+        assert_eq!(BACKOFF_DURATION, 10000); // 10秒
+        assert_eq!(MIN_BACKOFF_DURATION, 5000); // 5秒
+        assert_eq!(MAX_BACKOFF_DURATION, 60000); // 60秒
+        assert_eq!(MAX_404S_BEFORE_GIVING_UP, 3);
+        assert_eq!(MAX_CONSECUTIVE_EMPTY_FETCHES, 5);
+    }
 }
