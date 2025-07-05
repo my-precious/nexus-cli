@@ -163,6 +163,8 @@ start_all_instances() {
     echo "  - 启动间隔: ${START_DELAY}秒"
     echo
     
+    rm -rf ~/.nexus/logs/*.log
+    
     local success_count=0
     local failed_count=0
     
