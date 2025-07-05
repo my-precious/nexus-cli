@@ -1,4 +1,4 @@
-// Copyright (c) 2024 Nexus. All rights reserved.
+// 版权所有 (c) 2024 Nexus。保留所有权利。
 
 use clap::{Parser, Subcommand};
 use crossterm::{
@@ -38,37 +38,37 @@ use crate::node_list::NodeList;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
-/// Command-line arguments
+/// 命令行参数
 struct Args {
-    /// Command to execute
+    /// 要执行的命令
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Subcommand)]
 enum Command {
-    /// Start the prover
+    /// 启动证明者
     Start {
-        /// Node ID
+        /// 节点ID
         #[arg(long, value_name = "NODE_ID")]
         node_id: Option<u64>,
 
-        /// Environment to connect to.
+        /// 要连接的环境。
         #[arg(long, value_enum)]
         env: Option<Environment>,
     },
     
-    /// Start multiple provers from node list file
+    /// 从节点列表文件启动多个证明者
     BatchFile {
-        /// Path to node list file (.txt)
+        /// 节点列表文件路径(.txt)
         #[arg(long, value_name = "FILE_PATH")]
         file: String,
 
-        /// Environment to connect to.
+        /// 要连接的环境。
         #[arg(long, value_enum)]
         env: Option<Environment>,
 
-        /// Delay between starting each node (seconds)
+        /// 启动每个节点之间的延迟(秒)
         #[arg(long, default_value = "2")]
         start_delay: u64,
 
@@ -443,4 +443,4 @@ async fn monitor_infinite_retry(
     }
     
     println!("✅ All provers stopped.");
-} 
+}
