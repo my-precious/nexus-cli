@@ -1,4 +1,4 @@
-// Copyright (c) 2024 Nexus. All rights reserved.
+// 版权所有 (c) 2024 Nexus。保留所有权利。
 
 mod analytics;
 mod config;
@@ -40,7 +40,7 @@ use std::{error::Error, io, sync::Arc};
 use tokio::sync::broadcast;
 use tokio::task::JoinSet;
 
-// Fixed line display manager
+// 固定行显示管理器
 #[derive(Debug)]
 struct FixedLineDisplay {
     #[allow(dead_code)]
@@ -164,7 +164,7 @@ impl FixedLineDisplay {
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
-/// Command-line arguments
+/// 命令行参数
 struct Args {
     /// Command to execute
     #[command(subcommand)]
@@ -173,51 +173,51 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Start the prover
+    /// 启动证明者
     Start {
-        /// Node ID
+        /// 节点ID
         #[arg(long, value_name = "NODE_ID")]
         node_id: Option<u64>,
 
-        /// Run without the terminal UI
+        /// 在没有终端UI的情况下运行
         #[arg(long = "headless", action = ArgAction::SetTrue)]
         headless: bool,
 
-        /// Maximum number of threads to use for proving.
+        /// 用于证明的最大线程数。
         #[arg(long = "max-threads", value_name = "MAX_THREADS")]
         max_threads: Option<u32>,
     },
-    /// Start multiple provers from node list file
+    /// 从节点列表文件启动多个证明者
     BatchFile {
-        /// Path to node list file (.txt)
+        /// 节点列表文件路径(.txt)
         #[arg(long, value_name = "FILE_PATH")]
         file: String,
 
-        /// Delay between starting each node (seconds)
+        /// 启动每个节点之间的延迟(秒)
         #[arg(long, default_value = "10")]
         start_delay: u64,
 
-        /// Maximum number of concurrent nodes
+        /// 最大并发节点数
         #[arg(long, default_value = "50")]
         max_concurrent: usize,
 
-        /// Enable verbose error logging
+        /// 启用详细错误日志记录
         #[arg(long)]
         verbose: bool,
     },
-    /// Register a new user
+    /// 注册新用户
     RegisterUser {
-        /// User's public Ethereum wallet address. 42-character hex string starting with '0x'
+        /// 用户的公共以太坊钱包地址。以'0x'开头的42字符十六进制字符串
         #[arg(long, value_name = "WALLET_ADDRESS")]
         wallet_address: String,
     },
-    /// Register a new node to an existing user, or link an existing node to a user.
+    /// 向现有用户注册新节点，或将现有节点链接到用户。
     RegisterNode {
-        /// ID of the node to register. If not provided, a new node will be created.
+        /// 要注册的节点ID。如果未提供，将创建一个新节点。
         #[arg(long, value_name = "NODE_ID")]
         node_id: Option<u64>,
     },
-    /// Clear the node configuration and logout.
+    /// 清除节点配置并登出。
     Logout,
 }
 
@@ -263,14 +263,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 }
 
-/// Starts the Nexus CLI application.
+/// 启动Nexus CLI应用程序。
 ///
-/// # Arguments
-/// * `node_id` - This client's unique identifier, if available.
-/// * `env` - The environment to connect to.
-/// * `config_path` - Path to the configuration file.
-/// * `headless` - If true, runs without the terminal UI.
-/// * `max_threads` - Optional maximum number of threads to use for proving.
+/// # 参数
+/// * `node_id` - 此客户端的唯一标识符（如果可用）。
+/// * `env` - 要连接的环境。
+/// * `config_path` - 配置文件的路径。
+/// * `headless` - 如果为true，则在没有终端UI的情况下运行。
+/// * `max_threads` - 用于证明的可选最大线程数。
 async fn start(
     node_id: Option<u64>,
     env: Environment,
@@ -279,7 +279,7 @@ async fn start(
     max_threads: Option<u32>,
 ) -> Result<(), Box<dyn Error>> {
     let mut node_id = node_id;
-    // If no node ID is provided, try to load it from the config file.
+    // 如果未提供节点ID，尝试从配置文件加载。
     if node_id.is_none() && config_path.exists() {
         let config = Config::load_from_file(&config_path)?;
         node_id = Some(config.node_id.parse::<u64>().map_err(|e| {
@@ -291,35 +291,35 @@ async fn start(
                 ),
             )
         })?);
-        println!("Read Node ID: {} from config file", node_id.unwrap());
+        println!("从配置文件读取节点ID: {}", node_id.unwrap());
     }
 
-    // Create a signing key for the prover.
+    // 为证明者创建签名密钥。
     let mut csprng = rand_core::OsRng;
     let signing_key: SigningKey = SigningKey::generate(&mut csprng);
     let orchestrator_client = OrchestratorClient::new(env);
-    // Clamp the number of workers to [1,8]. Keep this low for now to avoid rate limiting.
+    // 将工作线程数限制在[1,8]范围内。暂时保持较低以避免速率限制。
     let num_workers: usize = max_threads.unwrap_or(1).clamp(1, 8) as usize;
-    let (shutdown_sender, _) = broadcast::channel(1); // Only one shutdown signal needed
+    let (shutdown_sender, _) = broadcast::channel(1); // 只需要一个关闭信号
 
-    // Load config to get client_id for analytics
+    // 加载配置以获取用于分析的client_id
     let config_path = get_config_path()?;
     let client_id = if config_path.exists() {
         match Config::load_from_file(&config_path) {
             Ok(config) => {
-                // First try user_id, then node_id, then fallback to UUID
+                // 首先尝试user_id，然后是node_id，最后回退到UUID
                 if !config.user_id.is_empty() {
                     config.user_id
                 } else if !config.node_id.is_empty() {
                     config.node_id
                 } else {
-                    uuid::Uuid::new_v4().to_string() // Fallback to random UUID
+                    uuid::Uuid::new_v4().to_string() // 回退到随机UUID
                 }
             }
-            Err(_) => uuid::Uuid::new_v4().to_string(), // Fallback to random UUID
+            Err(_) => uuid::Uuid::new_v4().to_string(), // 回退到随机UUID
         }
     } else {
-        uuid::Uuid::new_v4().to_string() // Fallback to random UUID
+        uuid::Uuid::new_v4().to_string() // 回退到随机UUID
     };
 
     let (mut event_receiver, mut join_handles) = match node_id {
@@ -341,16 +341,16 @@ async fn start(
     };
 
     if !headless {
-        // Terminal setup
+        // 终端设置
         enable_raw_mode()?;
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
 
-        // Initialize the terminal with Crossterm backend.
+        // 使用Crossterm后端初始化终端。
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
-        // Create the application and run it.
+        // 创建应用程序并运行。
         let app = ui::App::new(
             node_id,
             *orchestrator_client.environment(),
@@ -359,7 +359,7 @@ async fn start(
         );
         let res = ui::run(&mut terminal, app).await;
 
-        // Clean up the terminal after running the application.
+        // 运行应用程序后清理终端。
         disable_raw_mode()?;
         execute!(
             terminal.backend_mut(),
@@ -370,9 +370,9 @@ async fn start(
 
         res?;
     } else {
-        // Headless mode: log events to console.
+        // 无头模式：将事件记录到控制台。
 
-        // Trigger shutdown on Ctrl+C
+        // 在Ctrl+C上触发关闭
         let shutdown_sender_clone = shutdown_sender.clone();
         tokio::spawn(async move {
             if tokio::signal::ctrl_c().await.is_ok() {
@@ -400,7 +400,7 @@ async fn start(
     Ok(())
 }
 
-/// Monitor tasks with infinite retry (no replacement)
+/// 监控任务，无限重试（无替换）
 async fn monitor_infinite_retry(
     mut join_set: JoinSet<(u64, Result<(), Box<dyn Error + Send + Sync>>)>,
     display: Arc<FixedLineDisplay>,
@@ -411,7 +411,7 @@ async fn monitor_infinite_retry(
 
     loop {
         tokio::select! {
-            // Handle completed tasks (should not happen with infinite retry)
+            // 处理已完成的任务（在无限重试的情况下不应发生）
             Some(result) = join_set.join_next() => {
                 if let Ok((node_id, prover_result)) = result {
                     match prover_result {
@@ -427,14 +427,14 @@ async fn monitor_infinite_retry(
                 }
             }
 
-            // Handle shutdown signal
+            // 处理关闭信号
             _ = &mut ctrl_c => {
                 println!("🛑 Shutdown signal received. Stopping all provers...");
                 join_set.abort_all();
                 break;
             }
 
-            // Exit monitoring if all tasks unexpectedly exit
+            // 如果所有任务意外退出，则退出监控
             else => {
                 println!("⚠️ All nodes have exited unexpectedly.");
                 break;

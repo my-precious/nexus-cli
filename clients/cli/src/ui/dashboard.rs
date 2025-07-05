@@ -88,22 +88,10 @@ impl DashboardState {
         }
     }
 
-    /// Format timestamp to include date but no year (MM-DD HH:MM:SS)
+    /// Format timestamp to only show time (HH:MM:SS)
     fn format_compact_timestamp(timestamp: &str) -> String {
-        // Extract from "YYYY-MM-DD HH:MM:SS" format to "MM-DD HH:MM:SS"
-        if let Some(date_time) = timestamp.split_once(' ') {
-            let date_part = date_time.0; // "YYYY-MM-DD"
-            let time_part = date_time.1; // "HH:MM:SS"
-
-            if let Some(month_day) = date_part.get(5..) {
-                // Skip "YYYY-"
-                format!("{} {}", month_day, time_part)
-            } else {
-                timestamp.to_string()
-            }
-        } else {
-            timestamp.to_string()
-        }
+        // 现在时间戳已经是 HH:MM:SS 格式，直接返回
+        timestamp.to_string()
     }
 
     /// Truncate long messages to prevent layout overflow
