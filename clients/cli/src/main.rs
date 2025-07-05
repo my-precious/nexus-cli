@@ -499,70 +499,7 @@ async fn monitor_infinite_retry(
     println!("✅ All provers stopped.");
 }
 
-async fn start_authenticated_workers(
-    node_id: u64,
-    signing_key: SigningKey,
-    orchestrator_client: OrchestratorClient,
-    num_workers: usize,
-    shutdown: broadcast::Receiver<()>,
-    env: Environment,
-    client_id: String,
-) -> (
-    broadcast::Receiver<events::Event>,
-    Vec<tokio::task::JoinHandle<()>>,
-) {
-    let adaptive_config = Arc::new(AdaptiveConfig::new());
-    let (event_sender, event_receiver) = broadcast::channel(100);
-    let mut handles = Vec::new();
 
-    for worker_id in 0..num_workers {
-        let event_sender = event_sender.clone();
-        let orchestrator = orchestrator_client.clone();
-        let signing_key = signing_key.clone();
-        let mut shutdown = shutdown.resubscribe();
-        let adaptive_config = adaptive_config.clone();
-        let client_id = client_id.clone();
-
-        let handle = tokio::spawn(async move {
-            let worker = workers::online::OnlineWorker::new(
-                node_id,
-                worker_id,
-                signing_key,
-                orchestrator,
-                event_sender,
-                env,
-                client_id,
-            );
-
-            loop {
-                match worker.run(&mut shutdown).await {
-                    Ok(queue_size) => {
-                        adaptive_config.success_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        adaptive_config.adjust_wait_time(queue_size);
-                        let wait_time = adaptive_config.wait_time.load(std::sync::atomic::Ordering::Relaxed);
-                        if queue_size == 0 {
-                            tokio::time::sleep(std::time::Duration::from_secs(wait_time)).await;
-                        }
-                    }
-                    Err(e) => {
-                        adaptive_config.failure_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        println!("Worker error: {}", e);
-                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    }
-                }
-                
-                // 每10次操作后调整工作线程数
-                if (adaptive_config.success_count.load(std::sync::atomic::Ordering::Relaxed) + 
-                    adaptive_config.failure_count.load(std::sync::atomic::Ordering::Relaxed)) >= 10 {
-                    adaptive_config.adjust_worker_count();
-                }
-            }
-        });
-        handles.push(handle);
-    }
-
-    (event_receiver, handles)
-}
 
 async fn start_batch_from_file_with_pool(
     file_path: &str,
