@@ -165,6 +165,56 @@ impl FixedLineDisplay {
     }
 }
 
+const MIN_WAIT_TIME: u64 = 5; // 最小等待时间（秒）
+const MAX_WAIT_TIME: u64 = 30; // 最大等待时间（秒）
+const INITIAL_WORKERS: u32 = 2; // 初始工作线程数
+const MAX_WORKERS: u32 = 8; // 最大工作线程数
+
+#[derive(Debug)]
+struct AdaptiveConfig {
+    wait_time: std::sync::atomic::AtomicU64,
+    worker_count: std::sync::atomic::AtomicU32,
+    success_count: std::sync::atomic::AtomicU32,
+    failure_count: std::sync::atomic::AtomicU32,
+}
+
+impl AdaptiveConfig {
+    fn new() -> Self {
+        Self {
+            wait_time: std::sync::atomic::AtomicU64::new(MIN_WAIT_TIME),
+            worker_count: std::sync::atomic::AtomicU32::new(INITIAL_WORKERS),
+            success_count: std::sync::atomic::AtomicU32::new(0),
+            failure_count: std::sync::atomic::AtomicU32::new(0),
+        }
+    }
+
+    fn adjust_wait_time(&self, queue_size: u32) {
+        let current = self.wait_time.load(std::sync::atomic::Ordering::Relaxed);
+        let new_wait_time = if queue_size == 0 {
+            std::cmp::min(current * 2, MAX_WAIT_TIME)
+        } else {
+            std::cmp::max(current / 2, MIN_WAIT_TIME)
+        };
+        self.wait_time.store(new_wait_time, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn adjust_worker_count(&self) {
+        let success = self.success_count.load(std::sync::atomic::Ordering::Relaxed);
+        let failure = self.failure_count.load(std::sync::atomic::Ordering::Relaxed);
+        let current = self.worker_count.load(std::sync::atomic::Ordering::Relaxed);
+        
+        // 根据成功率调整工作线程数
+        if success > failure && current < MAX_WORKERS {
+            self.worker_count.store(std::cmp::min(current + 1, MAX_WORKERS), std::sync::atomic::Ordering::Relaxed);
+        } else if failure > success && current > INITIAL_WORKERS {
+            self.worker_count.store(std::cmp::max(current - 1, INITIAL_WORKERS), std::sync::atomic::Ordering::Relaxed);
+        }
+        
+        // 重置计数器
+        self.success_count.store(0, std::sync::atomic::Ordering::Relaxed);
+        self.failure_count.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 /// 命令行参数
@@ -446,6 +496,71 @@ async fn monitor_infinite_retry(
     }
 
     println!("✅ All provers stopped.");
+}
+
+async fn start_authenticated_workers(
+    node_id: u64,
+    signing_key: SigningKey,
+    orchestrator_client: OrchestratorClient,
+    num_workers: usize,
+    shutdown: broadcast::Receiver<()>,
+    env: Environment,
+    client_id: String,
+) -> (
+    broadcast::Receiver<events::Event>,
+    Vec<tokio::task::JoinHandle<()>>,
+) {
+    let adaptive_config = Arc::new(AdaptiveConfig::new());
+    let (event_sender, event_receiver) = broadcast::channel(100);
+    let mut handles = Vec::new();
+
+    for worker_id in 0..num_workers {
+        let event_sender = event_sender.clone();
+        let orchestrator = orchestrator_client.clone();
+        let signing_key = signing_key.clone();
+        let mut shutdown = shutdown.resubscribe();
+        let adaptive_config = adaptive_config.clone();
+        let client_id = client_id.clone();
+
+        let handle = tokio::spawn(async move {
+            let worker = workers::online::OnlineWorker::new(
+                node_id,
+                worker_id,
+                signing_key,
+                orchestrator,
+                event_sender,
+                env,
+                client_id,
+            );
+
+            loop {
+                match worker.run(&mut shutdown).await {
+                    Ok(queue_size) => {
+                        adaptive_config.success_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        adaptive_config.adjust_wait_time(queue_size);
+                        let wait_time = adaptive_config.wait_time.load(std::sync::atomic::Ordering::Relaxed);
+                        if queue_size == 0 {
+                            tokio::time::sleep(std::time::Duration::from_secs(wait_time)).await;
+                        }
+                    }
+                    Err(e) => {
+                        adaptive_config.failure_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        println!("Worker error: {}", e);
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    }
+                }
+                
+                // 每10次操作后调整工作线程数
+                if (adaptive_config.success_count.load(std::sync::atomic::Ordering::Relaxed) + 
+                    adaptive_config.failure_count.load(std::sync::atomic::Ordering::Relaxed)) >= 10 {
+                    adaptive_config.adjust_worker_count();
+                }
+            }
+        });
+        handles.push(handle);
+    }
+
+    (event_receiver, handles)
 }
 
 async fn start_batch_from_file_with_pool(
