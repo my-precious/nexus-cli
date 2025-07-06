@@ -8,6 +8,9 @@ mod error_classifier;
 mod events;
 mod keys;
 mod logging;
+mod memory_monitor;
+mod dynamic_node_manager;
+mod enhanced_display;
 #[path = "proto/nexus.orchestrator.rs"]
 mod nexus_orchestrator;
 mod orchestrator;
@@ -28,6 +31,7 @@ use crate::orchestrator::{Orchestrator, OrchestratorClient};
 use crate::prover_runtime::{start_anonymous_workers, start_authenticated_workers};
 use crate::register::{register_node, register_user};
 use crate::node_list::NodeList;
+
 use clap::{ArgAction, Parser, Subcommand};
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
@@ -299,7 +303,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         } => {
             if verbose {
             }
-            start_batch_from_file_with_pool(&file, Environment::default(), start_delay, max_concurrent, verbose).await
+            start_batch_from_file_optimized(&file, Environment::default(), start_delay, max_concurrent, verbose).await
         },
         Command::Logout => {
             println!("Logging out and clearing node configuration file...");
@@ -499,16 +503,15 @@ async fn monitor_infinite_retry(
     println!("✅ All provers stopped.");
 }
 
-
-
-async fn start_batch_from_file_with_pool(
+/// 优化的批量启动函数 - 集成内存监控和动态节点管理
+async fn start_batch_from_file_optimized(
     file_path: &str,
     env: Environment,
     start_delay: u64,
     max_concurrent: usize,
-    _verbose: bool,
+    verbose: bool,
 ) -> Result<(), Box<dyn Error>> {
-    // Load node list
+    // 加载节点列表
     let node_list = NodeList::load_from_file(file_path)?;
     let all_nodes = node_list.node_ids().to_vec();
 
@@ -516,91 +519,180 @@ async fn start_batch_from_file_with_pool(
         return Err("Node list is empty".into());
     }
 
-    let actual_concurrent = std::cmp::min(max_concurrent, all_nodes.len());
-
-    println!("🚀 Starting batch processing from file: {}", file_path);
+    println!("🚀 Starting optimized batch processing from file: {}", file_path);
     println!("📊 Total nodes: {}", all_nodes.len());
-    println!("🔄 Max concurrent: {}", actual_concurrent);
+    println!("🔄 Max concurrent: {}", max_concurrent);
     println!("⏱️  Start delay: {}s", start_delay);
     println!("🌍 Environment: {:?}", env);
-    println!("♾️  Mode: Infinite retry (no node replacement)");
+    println!("🧠 Memory-based auto-scaling enabled");
     println!("═══════════════════════════════════════");
 
-    // Create display manager
-    let display = Arc::new(FixedLineDisplay::new(actual_concurrent));
+    // 创建内存监控器
+    let memory_monitor = Arc::new(memory_monitor::MemoryMonitor::new_default());
+    
+    // 启动内存监控
+    memory_monitor.start_monitoring().await.map_err(|e| format!("Failed to start memory monitoring: {}", e))?;
 
-    // Initial display
-    display.render_display(&std::collections::HashMap::new()).await;
+    // 创建增强显示管理器
+    let display = Arc::new(enhanced_display::EnhancedDisplay::new(
+        memory_monitor.clone(),
+        20, // 最大日志条目数
+    ));
 
-    let mut join_set = JoinSet::new();
+    // 创建动态节点管理器配置
+    let manager_config = dynamic_node_manager::DynamicNodeManagerConfig {
+        min_start_interval: 1, // 初始启动间隔固定为1秒，不受start_delay影响
+        max_start_interval: start_delay * 3, // 最大启动间隔为原始延迟的3倍
+        initial_nodes: std::cmp::min(2, max_concurrent), // 初始启动2个节点
+        max_nodes: all_nodes.len(), // 最大节点数不超过实际可用节点数
+    };
 
-    // Start concurrent nodes
-    for &node_id in all_nodes.iter().take(actual_concurrent) {
-        let disp = display.clone();
-        let env = env.clone();
+    // 创建动态节点管理器
+    let node_manager = Arc::new(dynamic_node_manager::DynamicNodeManager::new(
+        all_nodes.clone(),
+        memory_monitor.clone(),
+        Some(manager_config),
+    ));
 
-        join_set.spawn(async move {
-            let display_callback = {
-                let disp = disp.clone();
-                move |status: String| {
-                    let disp = disp.clone();
-                    let node_id = node_id;
-                    tokio::spawn(async move {
-                        disp.update_node_status(node_id, status).await;
-                    });
-                }
-            };
+    // 启动动态节点管理器
+    let display_clone = display.clone();
+    let env_clone = env.clone();
+    let verbose_clone = verbose;
+    
+    node_manager.start_manager(move |node_id, shutdown_sender| {
+        let display = display_clone.clone();
+        let env = env_clone.clone();
+        let verbose = verbose_clone;
+        
+        async move {
+            println!("[DEBUG] Node task START for node_id={}", node_id);
+            
+            // 记录节点启动日志
+            display.add_scaling_log(
+                enhanced_display::ScalingOperation::NodeStarted,
+                Some(node_id),
+                "Node started by dynamic manager".to_string(),
+            ).await;
+            println!("[DEBUG] Node {}: scaling log added", node_id);
 
-            // Create a signing key for the prover
+            // 立即设置节点初始状态，确保显示界面能看到该节点
+            println!("[DEBUG] Node {}: about to set initial status", node_id);
+            display.update_node_status(node_id, "🚀 Starting...".to_string()).await;
+            println!("[DEBUG] Node {}: initial status set", node_id);
+
+            // 创建签名密钥
             let mut csprng = rand_core::OsRng;
             let signing_key: SigningKey = SigningKey::generate(&mut csprng);
+            
             let orchestrator_client = OrchestratorClient::new(env);
-            let (shutdown_sender, _) = broadcast::channel(1);
 
-            // Start the worker
+            // 启动认证工作线程
             let (mut event_receiver, join_handles) = start_authenticated_workers(
                 node_id,
                 signing_key,
                 orchestrator_client,
-                1, // Single worker per node
+                1, // 每个节点单线程
                 shutdown_sender.subscribe(),
                 env,
                 node_id.to_string(),
             ).await;
+            println!("[DEBUG] Node {}: authenticated workers started", node_id);
+            
+            // 立即发送一个初始状态事件，确保节点显示
+            let _ = event_receiver.try_recv(); // 清空可能的事件
+            display.update_node_status(node_id, "🔄 Workers started, waiting for tasks...".to_string()).await;
 
-            // Process events
+            // 处理事件
             let mut shutdown_receiver = shutdown_sender.subscribe();
-            let result = async {
-                loop {
-                    tokio::select! {
-                        Some(event) = event_receiver.recv() => {
-                            display_callback(event.to_string());
-                        }
-                        _ = shutdown_receiver.recv() => {
-                            break;
+            println!("[DEBUG] Node {}: entering event loop", node_id);
+            
+            loop {
+                tokio::select! {
+                    Some(event) = event_receiver.recv() => {
+                        let event_str = event.to_string();
+                        println!("[DEBUG] Node {}: received event: {}", node_id, event_str);
+                        display.update_node_status(node_id, event_str.clone()).await;
+                        
+                        if verbose {
+                            println!("[Node-{}] {}", node_id, event_str);
                         }
                     }
+                    _ = shutdown_receiver.recv() => {
+                        // 收到优雅关闭信号
+                        println!("[DEBUG] Node {}: received shutdown signal", node_id);
+                        display.add_scaling_log(
+                            enhanced_display::ScalingOperation::NodeStopped,
+                            Some(node_id),
+                            "Graceful shutdown signal received".to_string(),
+                        ).await;
+                        break;
+                    }
                 }
-                Ok(())
-            }.await;
+            }
 
-            // Wait for all handles
+            // 等待所有工作线程完成
+            println!("[DEBUG] Node {}: waiting for worker threads to complete", node_id);
             for handle in join_handles {
                 let _ = handle.await;
             }
+            println!("[DEBUG] Node {}: all worker threads completed", node_id);
+        }
+    }).await;
 
-            (node_id, result)
-        });
+    // 等待一小段时间让初始节点启动
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-        tokio::time::sleep(std::time::Duration::from_secs(start_delay)).await;
+    println!("✅ Dynamic node manager started!");
+    println!("🛑 Press Ctrl+C to gracefully stop all nodes");
+
+    // 设置Ctrl+C信号处理
+    let node_manager_clone = node_manager.clone();
+    let display_clone = display.clone();
+    
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            println!("\n🛑 Ctrl+C received. Starting graceful shutdown...");
+            
+            // 记录优雅关闭日志
+            display_clone.add_scaling_log(
+                enhanced_display::ScalingOperation::EmergencyScaleDown,
+                None,
+                "Ctrl+C received, graceful shutdown initiated".to_string(),
+            ).await;
+            
+            // 停止节点管理器
+            node_manager_clone.stop_manager().await;
+            
+            // 优雅关闭所有节点
+            node_manager_clone.graceful_shutdown_all().await;
+            
+            println!("✅ All nodes gracefully stopped.");
+        }
+    });
+
+    // 主循环：监控和显示状态
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        
+        let active_count = node_manager.active_count().await;
+        let pending_count = node_manager.pending_count().await;
+        
+        // 检查是否所有节点都已处理完毕
+        if active_count == 0 && pending_count == 0 {
+            println!("✅ All nodes have been processed.");
+            break;
+        }
+        
+        // 检查节点管理器是否还在运行
+        if !node_manager.is_monitoring().await {
+            println!("⚠️ Node manager has stopped.");
+            break;
+        }
     }
 
-    println!("✅ All {} provers started with infinite retry!", actual_concurrent);
-    println!("📋 Unused nodes: {}", all_nodes.len() - actual_concurrent);
-    println!("🛑 Press Ctrl+C to stop all provers");
-
-    // Monitor tasks
-    monitor_infinite_retry(join_set, display).await;
-
+    // 停止内存监控
+    memory_monitor.stop_monitoring();
+    
+    println!("🎉 Optimized batch processing completed successfully!");
     Ok(())
 }
