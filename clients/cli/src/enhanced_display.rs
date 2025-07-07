@@ -82,7 +82,7 @@ impl EnhancedDisplay {
             self.increment_proof_count(node_id).await;
         }
 
-        println!("[DEBUG] update_node_status called: node_id={}, status={}", node_id, status);
+        // println!("[DEBUG] update_node_status called: node_id={}, status={}", node_id, status);
 
         let needs_update = {
             let lines = self.node_lines.read().await;

@@ -565,7 +565,7 @@ async fn start_batch_from_file_optimized(
         let verbose = verbose_clone;
         
         async move {
-            println!("[DEBUG] Node task START for node_id={}", node_id);
+            // println!("[DEBUG] Node task START for node_id={}", node_id);
             
             // 记录节点启动日志
             display.add_scaling_log(
@@ -573,12 +573,12 @@ async fn start_batch_from_file_optimized(
                 Some(node_id),
                 "Node started by dynamic manager".to_string(),
             ).await;
-            println!("[DEBUG] Node {}: scaling log added", node_id);
+            // println!("[DEBUG] Node {}: scaling log added", node_id);
 
             // 立即设置节点初始状态，确保显示界面能看到该节点
-            println!("[DEBUG] Node {}: about to set initial status", node_id);
+            // println!("[DEBUG] Node {}: about to set initial status", node_id);
             display.update_node_status(node_id, "🚀 Starting...".to_string()).await;
-            println!("[DEBUG] Node {}: initial status set", node_id);
+            // println!("[DEBUG] Node {}: initial status set", node_id);
 
             // 创建签名密钥
             let mut csprng = rand_core::OsRng;
@@ -596,7 +596,7 @@ async fn start_batch_from_file_optimized(
                 env,
                 node_id.to_string(),
             ).await;
-            println!("[DEBUG] Node {}: authenticated workers started", node_id);
+            // println!("[DEBUG] Node {}: authenticated workers started", node_id);
             
             // 立即发送一个初始状态事件，确保节点显示
             let _ = event_receiver.try_recv(); // 清空可能的事件
@@ -604,13 +604,13 @@ async fn start_batch_from_file_optimized(
 
             // 处理事件
             let mut shutdown_receiver = shutdown_sender.subscribe();
-            println!("[DEBUG] Node {}: entering event loop", node_id);
+            // println!("[DEBUG] Node {}: entering event loop", node_id);
             
             loop {
                 tokio::select! {
                     Some(event) = event_receiver.recv() => {
                         let event_str = event.to_string();
-                        println!("[DEBUG] Node {}: received event: {}", node_id, event_str);
+                        // println!("[DEBUG] Node {}: received event: {}", node_id, event_str);
                         display.update_node_status(node_id, event_str.clone()).await;
                         
                         if verbose {
@@ -619,7 +619,7 @@ async fn start_batch_from_file_optimized(
                     }
                     _ = shutdown_receiver.recv() => {
                         // 收到优雅关闭信号
-                        println!("[DEBUG] Node {}: received shutdown signal", node_id);
+                        // println!("[DEBUG] Node {}: received shutdown signal", node_id);
                         display.add_scaling_log(
                             enhanced_display::ScalingOperation::NodeStopped,
                             Some(node_id),
@@ -631,11 +631,11 @@ async fn start_batch_from_file_optimized(
             }
 
             // 等待所有工作线程完成
-            println!("[DEBUG] Node {}: waiting for worker threads to complete", node_id);
+            // println!("[DEBUG] Node {}: waiting for worker threads to complete", node_id);
             for handle in join_handles {
                 let _ = handle.await;
             }
-            println!("[DEBUG] Node {}: all worker threads completed", node_id);
+            // println!("[DEBUG] Node {}: all worker threads completed", node_id);
         }
     }).await;
 

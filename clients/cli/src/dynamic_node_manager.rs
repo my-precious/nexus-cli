@@ -105,7 +105,7 @@ impl DynamicNodeManager {
             
             // 检查初始化的节点数量
             let initial_pending_count = pending_nodes.read().await.len();
-            println!("🔍 DEBUG: Initial pending nodes count: {}", initial_pending_count);
+            // println!("🔍 DEBUG: Initial pending nodes count: {}", initial_pending_count);
             
             // 1. 初始渐进式启动
             let mut initial_started = 0;
@@ -128,13 +128,13 @@ impl DynamicNodeManager {
                     let mut join_set = join_set.write().await;
                     let spawn_node_fn = spawn_node_fn.clone();
                     join_set.spawn(async move {
-                        println!("[DEBUG] async task START for node_id={}", node_id);
-                        println!("[DEBUG] Node {}: about to call spawn_node_fn", node_id);
+                        // println!("[DEBUG] async task START for node_id={}", node_id);
+                        // println!("[DEBUG] Node {}: about to call spawn_node_fn", node_id);
                         
                         // 执行节点任务
                         spawn_node_fn(node_id, shutdown_sender.clone()).await;
                         
-                        println!("[DEBUG] async task END for node_id={}", node_id);
+                        // println!("[DEBUG] async task END for node_id={}", node_id);
                         node_id
                     });
                     initial_started += 1;
@@ -204,7 +204,7 @@ impl DynamicNodeManager {
                              current_count, current_count + nodes_to_add, nodes_to_add, usage * 100.0, pending_count);
                     let mut pending = pending_nodes.write().await;
                     if let Some(node_id) = pending.pop_front() {
-                        println!("[DEBUG] spawn_node_fn will be called for node_id={}", node_id);
+                        // println!("[DEBUG] spawn_node_fn will be called for node_id={}", node_id);
                         let (shutdown_sender, _shutdown_receiver) = broadcast::channel(1);
                         {
                             let mut active = active_nodes.write().await;
@@ -217,13 +217,13 @@ impl DynamicNodeManager {
                         let mut join_set = join_set.write().await;
                         let spawn_node_fn = spawn_node_fn.clone();
                         join_set.spawn(async move {
-                            println!("[DEBUG] async task START for node_id={}", node_id);
-                            println!("[DEBUG] Node {}: about to call spawn_node_fn", node_id);
+                            // println!("[DEBUG] async task START for node_id={}", node_id);
+                            // println!("[DEBUG] Node {}: about to call spawn_node_fn", node_id);
                             
                             // 执行节点任务
                             spawn_node_fn(node_id, shutdown_sender.clone()).await;
                             
-                            println!("[DEBUG] async task END for node_id={}", node_id);
+                            // println!("[DEBUG] async task END for node_id={}", node_id);
                             node_id
                         });
                         // 智能启动间隔
@@ -255,10 +255,10 @@ impl DynamicNodeManager {
                 }
                 
                 // 添加详细的调试信息
-                println!("🔍 DEBUG: adjusted_suggested > current_count = {}, pending_count > 0 = {}", 
-                         adjusted_suggested > current_count, pending_count > 0);
-                println!("🔍 DEBUG: suggested = {}, adjusted_suggested = {}, current_count = {}, pending_count = {}", 
-                         suggested, adjusted_suggested, current_count, pending_count);
+                // println!("🔍 DEBUG: adjusted_suggested > current_count = {}, pending_count > 0 = {}", 
+                //          adjusted_suggested > current_count, pending_count > 0);
+                // println!("🔍 DEBUG: suggested = {}, adjusted_suggested = {}, current_count = {}, pending_count = {}", 
+                //          suggested, adjusted_suggested, current_count, pending_count);
                 
                 // 检查周期
                 let check_interval = memory_monitor.config().check_interval;
