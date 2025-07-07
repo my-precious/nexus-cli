@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tokio::sync::{RwLock, Mutex};
 use chrono::{DateTime, Local};
 use crate::memory_monitor::{MemoryInfo, MemoryStatus, MemoryMonitor};
+use regex::Regex;
 
 /// 伸缩操作日志条目
 #[derive(Debug, Clone)]
@@ -260,6 +261,7 @@ impl EnhancedDisplay {
 
     /// 渲染节点列表
     async fn render_node_list(&self, lines: &HashMap<u64, String>) {
+        use chrono::NaiveDateTime;
         if lines.is_empty() {
             println!("🖥️  Active Nodes:");
             println!("   No active nodes");
@@ -268,13 +270,22 @@ impl EnhancedDisplay {
         }
 
         println!("🖥️  Active Nodes:");
-        let mut sorted_nodes: Vec<_> = lines.iter().collect();
-        sorted_nodes.sort_by_key(|(id, _)| **id);
+        // 用正则提取 [YYYY-MM-DD HH:MM:SS] 时间戳
+        let re = Regex::new(r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]").unwrap();
+        let mut node_statuses: Vec<(u64, String, Option<NaiveDateTime>)> = lines.iter().map(|(id, status)| {
+            let time = re.captures(status)
+                .and_then(|cap| cap.get(1))
+                .and_then(|m| NaiveDateTime::parse_from_str(m.as_str(), "%Y-%m-%d %H:%M:%S").ok());
+            (*id, status.clone(), time)
+        }).collect();
 
-        for (node_id, status) in sorted_nodes {
+        // 按时间降序排序（无时间的排最后）
+        node_statuses.sort_by(|a, b| b.2.cmp(&a.2));
+
+        // 只保留最近20条
+        for (node_id, status, _) in node_statuses.iter().take(20) {
             let proof_count = *self.proof_counts.read().await.get(node_id).unwrap_or(&0);
-            let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-            println!("   Node-{} (Proofs: {}): {} [{}]", node_id, proof_count, status, timestamp);
+            println!("   Node-{} (Proofs: {}): {}", node_id, proof_count, status);
         }
         println!("───────────────────────────────────────");
     }
