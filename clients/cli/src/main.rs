@@ -22,6 +22,7 @@ pub mod system;
 mod task;
 mod task_cache;
 mod ui;
+mod version_checker;
 mod workers;
 mod node_list;
 
