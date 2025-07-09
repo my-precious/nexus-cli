@@ -29,13 +29,13 @@ pub struct MemoryConfig {
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
-            safe_threshold: 0.7,    // 70% 以下为安全
-            warning_threshold: 0.8, // 80% 以下为警告
-            danger_threshold: 0.9,  // 90% 以下为危险
+            safe_threshold: 0.8,    // 70% 以下为安全
+            warning_threshold: 0.88, // 80% 以下为警告
+            danger_threshold: 0.95,  // 90% 以下为危险
             check_interval: 5,      // 每5秒检查一次
-            min_nodes: 1,
+            min_nodes: 10,
             max_nodes: 50,
-            initial_nodes: 2,
+            initial_nodes: 5,
         }
     }
 }
@@ -91,11 +91,11 @@ impl MemoryInfo {
             0.0
         };
 
-        let status = if usage_ratio >= 0.9 {
+        let status = if usage_ratio >= 0.95 {
             MemoryStatus::Emergency
-        } else if usage_ratio >= 0.8 {
+        } else if usage_ratio >= 0.88 {
             MemoryStatus::Danger
-        } else if usage_ratio >= 0.7 {
+        } else if usage_ratio >= 0.8 {
             MemoryStatus::Warning
         } else {
             MemoryStatus::Safe
