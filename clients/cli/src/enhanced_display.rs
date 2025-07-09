@@ -81,7 +81,19 @@ impl EnhancedDisplay {
         if status.contains("Proof submitted") || status.contains("Successfully submitted proof") {
             self.increment_proof_count(node_id).await;
         }
-
+        
+        // 新增：如果状态包含 "Stopped" 或 "Shutdown"，则移除该节点
+        if status.contains("Stopped") || status.contains("Shutdown") {
+            let mut lines = self.node_lines.write().await;
+            if lines.remove(&node_id).is_some() {
+                // 触发重新渲染
+                let display = self.clone();
+                tokio::spawn(async move {
+                    display.render_display_optimized().await;
+                });
+            }
+            return;
+        }
         // println!("[DEBUG] update_node_status called: node_id={}, status={}", node_id, status);
 
         let needs_update = {

@@ -83,7 +83,8 @@ pub struct MemoryInfo {
 
 impl MemoryInfo {
     /// 创建新的内存信息实例
-    pub fn new(total: u64, used: u64, available: u64) -> Self {
+    pub fn new(total: u64, _used: u64, available: u64) -> Self {
+        let used = if total > available { total - available } else { 0 };
         let usage_ratio = if total > 0 {
             used as f64 / total as f64
         } else {

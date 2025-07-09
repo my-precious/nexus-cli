@@ -619,12 +619,13 @@ async fn start_batch_from_file_optimized(
                     }
                     _ = shutdown_receiver.recv() => {
                         // 收到优雅关闭信号
-                        // println!("[DEBUG] Node {}: received shutdown signal", node_id);
                         display.add_scaling_log(
                             enhanced_display::ScalingOperation::NodeStopped,
                             Some(node_id),
                             "Graceful shutdown signal received".to_string(),
                         ).await;
+                        // 新增：主动上报 "Stopped" 状态，触发 EnhancedDisplay 移除节点
+                        display.update_node_status(node_id, "Stopped".to_string()).await;
                         break;
                     }
                 }
