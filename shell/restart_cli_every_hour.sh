@@ -11,6 +11,6 @@ fi
 
 while true; do
   echo "[$(date)] 启动 CLI（1小时后自动重启）..."
-  $TIMEOUT_CMD 2400 ~/nexus-cli/clients/cli/target/release/nexus-network batch-file --file ~/.nexus/nodes.txt --max-concurrent 50
+  $TIMEOUT_CMD 2400 ~/nexus-cli/clients/cli/target/release/nexus-network batch-file --file ~/.nexus/nodes.txt --max-concurrent 80
   echo "[$(date)] CLI 已重启..."
 done 

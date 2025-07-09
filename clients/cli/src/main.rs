@@ -529,7 +529,9 @@ async fn start_batch_from_file_optimized(
     println!("═══════════════════════════════════════");
 
     // 创建内存监控器
-    let memory_monitor = Arc::new(memory_monitor::MemoryMonitor::new_default());
+    let mut memory_config = memory_monitor::MemoryConfig::default();
+    memory_config.max_nodes = max_concurrent;
+    let memory_monitor = Arc::new(memory_monitor::MemoryMonitor::new(memory_config));
     
     // 启动内存监控
     memory_monitor.start_monitoring().await.map_err(|e| format!("Failed to start memory monitoring: {}", e))?;
