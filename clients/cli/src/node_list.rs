@@ -136,40 +136,6 @@ impl NodeList {
         &self.node_ids
     }
 
-    /// Create example text file for users
-    pub fn create_example_files<P: AsRef<Path>>(dir: P) -> Result<(), NodeListError> {
-        let dir = dir.as_ref();
-        fs::create_dir_all(dir)?;
-
-        // Create example txt file
-        let txt_path = dir.join("example_nodes.txt");
-        let txt_content = r#"# Nexus CLI Node List (Text Format)
-# One node ID per line
-# Lines starting with # or // are comments
-# 
-# Example node IDs:
-
-10001
-10002
-10003
-20001
-20002
-30001
-
-# You can add more node IDs below:
-# 40001
-# 40002
-"#;
-        fs::write(txt_path, txt_content)?;
-
-        println!("✅ Example file created in {}", dir.display());
-        println!("   - example_nodes.txt (text format)");
-        println!("💡 Edit the file with your actual node IDs");
-
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

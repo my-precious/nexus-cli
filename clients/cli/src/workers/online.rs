@@ -317,7 +317,7 @@ async fn handle_empty_task_response(
     event_sender: &mpsc::Sender<Event>,
     state: &mut TaskFetchState,
 ) {
-    let current_queue_level = TASK_QUEUE_SIZE - sender.capacity();
+    let current_queue_level = TASK_QUEUE_SIZE - _sender.capacity();
 
     // 记录空获取
     state.record_empty_fetch();
@@ -453,7 +453,6 @@ async fn handle_all_duplicates(
                 "All {} tasks were duplicates - backing off for {}s",
                 duplicate_count,
                 state.backoff_duration.as_secs(),
-                state.consecutive_empty_fetches
             ),
             crate::events::EventType::Refresh,
             LogLevel::Warn,
@@ -762,18 +761,8 @@ async fn handle_submission_success(
     task: &Task,
     event_sender: &mpsc::Sender<Event>,
     successful_tasks: &TaskCache,
-    node_id: u64,
 ) {
     successful_tasks.insert(task.task_id.clone()).await;
-
-    // 更新提交计数
-    if let Err(e) = update_submission_count(node_id).await {
-        let msg = format!("Failed to update submission count: {}", e);
-        let _ = event_sender
-            .send(Event::proof_submitter(msg, crate::events::EventType::Error))
-            .await;
-    }
-
     let msg = format!(
         "[Task step 3 of 3] Proof submitted (Task ID: {}) Points for this node will be updated in https://app.nexus.xyz/rewards within 10 minutes",
         task.task_id
@@ -785,58 +774,6 @@ async fn handle_submission_success(
             LogLevel::Info,
         ))
         .await;
-}
-
-/// 更新提交计数
-async fn update_submission_count(node_id: u64) -> io::Result<()> {
-    let count_file = get_count_file_path();
-
-    // 确保目录存在
-    if let Some(parent) = count_file.parent() {
-        if !parent.exists() {
-            fs::create_dir_all(parent)?;
-        }
-    }
-
-    // 读取当前内容
-    let content = if count_file.exists() {
-        fs::read_to_string(&count_file)?
-    } else {
-        String::new()
-    };
-
-    // 解析现有计数
-    let mut counts = HashMap::new();
-    for line in content.lines() {
-        if let Some(inner) = line.strip_prefix('【').and_then(|s| s.strip_suffix('】')) {
-            if let Some((id, count_str)) = inner.split_once(": ") {
-                if let Ok(count) = count_str.parse::<u64>() {
-                    counts.insert(id.to_string(), count);
-                }
-            }
-        }
-    }
-
-    // 更新计数
-    let node_id_str = node_id.to_string();
-    let count = counts.entry(node_id_str).or_insert(0);
-    *count += 1;
-
-    // 写入新的内容
-    let mut output = String::new();
-    for (id, count) in &counts {
-        output.push_str(&format!("【{}: {}】\n", id, count));
-    }
-
-    fs::write(count_file, output)
-}
-
-/// 获取计数文件路径
-fn get_count_file_path() -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let path = home.join(".nexus").join("proof_submissions.count");
-    debug!("计数文件路径: {:?}", path);
-    path
 }
 
 /// Handle proof submission errors

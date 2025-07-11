@@ -99,7 +99,6 @@ pub async fn start_authenticated_workers(
         event_sender.clone(),
         shutdown.resubscribe(),
         successful_tasks.clone(),
-        node_id,
     )
     .await;
     join_handles.push(submit_proofs_handle);
