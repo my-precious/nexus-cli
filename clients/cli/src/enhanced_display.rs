@@ -7,6 +7,15 @@ use chrono::{DateTime, Local};
 use crate::memory_monitor::{MemoryInfo, MemoryStatus, MemoryMonitor};
 use regex::Regex;
 
+/// 事件类型枚举，用于确定 emoji 图标
+#[derive(Debug, Clone, PartialEq)]
+pub enum EventType {
+    Success,
+    Error,
+    Refresh,
+    Shutdown,
+}
+
 /// 伸缩操作日志条目
 #[derive(Debug, Clone)]
 pub struct ScalingLogEntry {
@@ -75,6 +84,94 @@ impl EnhancedDisplay {
         }
     }
 
+    /// 根据状态消息判断事件类型
+    fn determine_event_type(status: &str) -> EventType {
+        if status.contains("Success") || status.contains("completed successfully") || 
+           status.contains("Proof submitted") || status.contains("Successfully submitted") {
+            EventType::Success
+        } else if status.contains("Error") || status.contains("Failed") || 
+                  status.contains("error") || status.contains("failed") {
+            EventType::Error
+        } else if status.contains("Shutdown") || status.contains("Stopped") {
+            EventType::Shutdown
+        } else {
+            EventType::Refresh
+        }
+    }
+
+    /// 获取事件类型对应的 emoji 图标
+    fn get_event_emoji(event_type: &EventType) -> &'static str {
+        match event_type {
+            EventType::Success => "✅",
+            EventType::Error => "❌",
+            EventType::Refresh => "🔄",
+            EventType::Shutdown => "🔴",
+        }
+    }
+
+    /// 清理 HTTP 错误消息，显示简洁信息
+    fn clean_http_error_message(msg: &str) -> String {
+        // 处理包含 HTML 内容的常见 HTTP 错误模式
+        if msg.contains("<html>") || msg.contains("<!DOCTYPE") {
+            // 提取特定的 HTTP 状态码
+            if msg.contains("502") {
+                return "❌ HTTP 502 Bad Gateway".to_string();
+            }
+            if msg.contains("503") {
+                return "❌ HTTP 503 Service Unavailable".to_string();
+            }
+            if msg.contains("504") {
+                return "❌ HTTP 504 Gateway Timeout".to_string();
+            }
+            if msg.contains("500") {
+                return "❌ HTTP 500 Internal Server Error".to_string();
+            }
+            if msg.contains("429") {
+                return "⏳ HTTP 429 Rate Limited".to_string();
+            }
+            // 其他 HTML 错误响应的通用回退
+            return "❌ HTTP Error (server returned HTML)".to_string();
+        }
+
+        // 处理 "status XXX:" 模式（清理格式）
+        if let Some(status_pos) = msg.find("status ") {
+            if let Some(status_end) = msg[status_pos..]
+                .find(':')
+                .or_else(|| msg[status_pos..].find('<'))
+            {
+                let status_part = &msg[..status_pos + status_end];
+                // 查找 "status" 之前的额外上下文
+                if let Some(error_start) = status_part
+                    .rfind("error")
+                    .or_else(|| status_part.rfind("Error"))
+                {
+                    return format!("❌ {}", &status_part[error_start..]);
+                } else {
+                    return format!("❌ HTTP {}", &status_part[status_pos..]);
+                }
+            }
+        }
+
+        // 如果没有检测到 HTTP 错误模式，返回原始消息
+        msg.to_string()
+    }
+
+    /// 格式化状态消息，添加 emoji 并清理错误信息
+    fn format_status_with_emoji(status: &str) -> String {
+        // 清理 HTTP 错误消息
+        let cleaned_msg = Self::clean_http_error_message(status);
+        
+        // 如果消息被清理过，直接返回清理版本（清理版本已经包含 emoji）
+        if cleaned_msg != status {
+            cleaned_msg
+        } else {
+            // 否则根据事件类型添加 emoji
+            let event_type = Self::determine_event_type(status);
+            let emoji = Self::get_event_emoji(&event_type);
+            format!("{} {}", emoji, status)
+        }
+    }
+
     /// 更新节点状态
     pub async fn update_node_status(&self, node_id: u64, status: String) {
         // 检查是否是提交成功的状态
@@ -94,17 +191,19 @@ impl EnhancedDisplay {
             }
             return;
         }
-        // println!("[DEBUG] update_node_status called: node_id={}, status={}", node_id, status);
+
+        // 格式化状态消息，添加 emoji 并清理错误信息
+        let formatted_status = Self::format_status_with_emoji(&status);
 
         let needs_update = {
             let lines = self.node_lines.read().await;
-            lines.get(&node_id) != Some(&status)
+            lines.get(&node_id) != Some(&formatted_status)
         };
 
         if needs_update {
             {
                 let mut lines = self.node_lines.write().await;
-                lines.insert(node_id, status.clone());
+                lines.insert(node_id, formatted_status.clone());
             }
             
             // 使用 spawn 来避免阻塞调用线程
@@ -265,9 +364,20 @@ impl EnhancedDisplay {
         let active_count = lines.len();
         let total_proofs = *self.total_proofs.read().await;
         
+        // 统计成功和失败的节点数量（基于 emoji 判断）
+        let successful_count = lines.values()
+            .filter(|status| status.contains("✅"))
+            .count();
+        let failed_count = lines.values()
+            .filter(|status| status.contains("❌"))
+            .count();
+        let active_running_count = lines.values()
+            .filter(|status| status.contains("🔄"))
+            .count();
+        
         // 紧凑的节点统计显示
-        println!("📊 Nodes: {} Active | {} Success | {} Failed | 🎯 Proofs: {}", 
-                 active_count, 0, 0, total_proofs);
+        println!("📊 Nodes: {} Total | {} Active | {} Success | {} Failed | 🎯 Proofs: {}", 
+                 active_count, active_running_count, successful_count, failed_count, total_proofs);
         println!("───────────────────────────────────────");
     }
 
@@ -340,6 +450,32 @@ impl EnhancedDisplay {
     }
 }
 
+/// 演示函数：展示 emoji 处理效果
+pub async fn demo_emoji_processing() {
+    println!("🎯 EnhancedDisplay Emoji 处理演示");
+    println!("═══════════════════════════════════════");
+    
+    // 演示不同类型的状态消息
+    let test_messages = vec![
+        "Success: Task completed successfully",
+        "Error: Failed to fetch tasks: Reqwest error: error sending request for url (https://beta.orchestrator.nexus.xyz/v3/tasks/12896956), status 502: <html>502 Bad Gateway</html>",
+        "Refresh: Fetching tasks...",
+        "Shutdown: Node stopped",
+        "Error: Failed to fetch tasks: status 503: <!DOCTYPE html>503 Service Unavailable</html>",
+        "Success: Proof submitted successfully",
+        "Refresh: No tasks available yet for this node",
+    ];
+    
+    for (i, message) in test_messages.iter().enumerate() {
+        let formatted = EnhancedDisplay::format_status_with_emoji(message);
+        println!("{}. 原始: {}", i + 1, message);
+        println!("   处理后: {}", formatted);
+        println!();
+    }
+    
+    println!("✅ 演示完成！现在批量模式下的节点状态也会显示 emoji 了。");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,5 +539,74 @@ mod tests {
         
         display.update_node_status(1, "Successfully submitted proof".to_string()).await;
         assert_eq!(display.total_proof_count().await, 2);
+    }
+
+    #[test]
+    fn test_event_type_detection() {
+        // 测试成功事件
+        assert_eq!(EnhancedDisplay::determine_event_type("Success"), EventType::Success);
+        assert_eq!(EnhancedDisplay::determine_event_type("completed successfully"), EventType::Success);
+        assert_eq!(EnhancedDisplay::determine_event_type("Proof submitted"), EventType::Success);
+        
+        // 测试错误事件
+        assert_eq!(EnhancedDisplay::determine_event_type("Error"), EventType::Error);
+        assert_eq!(EnhancedDisplay::determine_event_type("Failed"), EventType::Error);
+        assert_eq!(EnhancedDisplay::determine_event_type("error"), EventType::Error);
+        
+        // 测试关闭事件
+        assert_eq!(EnhancedDisplay::determine_event_type("Shutdown"), EventType::Shutdown);
+        assert_eq!(EnhancedDisplay::determine_event_type("Stopped"), EventType::Shutdown);
+        
+        // 测试刷新事件（默认）
+        assert_eq!(EnhancedDisplay::determine_event_type("Fetching tasks"), EventType::Refresh);
+        assert_eq!(EnhancedDisplay::determine_event_type("Running"), EventType::Refresh);
+    }
+
+    #[test]
+    fn test_emoji_formatting() {
+        // 测试成功消息
+        let success_msg = EnhancedDisplay::format_status_with_emoji("Success: Task completed");
+        assert!(success_msg.contains("✅"));
+        assert!(success_msg.contains("Success: Task completed"));
+        
+        // 测试错误消息
+        let error_msg = EnhancedDisplay::format_status_with_emoji("Error: Failed to fetch tasks");
+        assert!(error_msg.contains("❌"));
+        assert!(error_msg.contains("Error: Failed to fetch tasks"));
+        
+        // 测试刷新消息
+        let refresh_msg = EnhancedDisplay::format_status_with_emoji("Fetching tasks...");
+        assert!(refresh_msg.contains("🔄"));
+        assert!(refresh_msg.contains("Fetching tasks..."));
+        
+        // 测试关闭消息
+        let shutdown_msg = EnhancedDisplay::format_status_with_emoji("Shutdown");
+        assert!(shutdown_msg.contains("🔴"));
+        assert!(shutdown_msg.contains("Shutdown"));
+    }
+
+    #[test]
+    fn test_http_error_cleaning() {
+        // 测试 HTTP 502 错误
+        let http_502 = EnhancedDisplay::clean_http_error_message("error sending request for url (https://beta.orchestrator.nexus.xyz/v3/tasks/12896956), status 502: <html>502 Bad Gateway</html>");
+        assert_eq!(http_502, "❌ HTTP 502 Bad Gateway");
+        
+        // 测试 HTTP 503 错误
+        let http_503 = EnhancedDisplay::clean_http_error_message("status 503: <!DOCTYPE html>503 Service Unavailable</html>");
+        assert_eq!(http_503, "❌ HTTP 503 Service Unavailable");
+        
+        // 测试 HTTP 429 错误
+        let http_429 = EnhancedDisplay::clean_http_error_message("status 429: <html>429 Too Many Requests</html>");
+        assert_eq!(http_429, "⏳ HTTP 429 Rate Limited");
+        
+        // 测试普通错误消息（不清理）
+        let normal_error = EnhancedDisplay::clean_http_error_message("Failed to fetch tasks: Network error");
+        assert_eq!(normal_error, "Failed to fetch tasks: Network error");
+    }
+
+    #[tokio::test]
+    async fn test_emoji_demo() {
+        // 运行演示函数
+        demo_emoji_processing().await;
     }
 } 

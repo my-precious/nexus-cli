@@ -135,6 +135,7 @@ impl NodeList {
     pub fn node_ids(&self) -> &[u64] {
         &self.node_ids
     }
+}
 
 #[cfg(test)]
 mod tests {
