@@ -143,10 +143,7 @@ async fn attempt_task_fetch(
 ) -> Result<(), bool> {
     let _ = event_sender
         .send(Event::task_fetcher_with_level(
-            format!(
-                "🔍 Fetching tasks (queue: {} tasks)",
-                TASK_QUEUE_SIZE - sender.capacity()
-            ),
+            "[Task step 1 of 3] Fetching tasks...Note: CLI tasks are harder to solve, so they receive 10 times more points than web provers".to_string(),
             crate::events::EventType::Refresh,
             LogLevel::Debug,
         ))
@@ -181,7 +178,7 @@ async fn attempt_task_fetch(
             state.record_fetch_attempt();
             let _ = event_sender
                 .send(Event::task_fetcher_with_level(
-                    format!("⏰ Fetch timeout after {}s", timeout_duration.as_secs()),
+                    format!("Fetch timeout after {}s", timeout_duration.as_secs()),
                     crate::events::EventType::Error,
                     LogLevel::Warn,
                 ))
@@ -203,11 +200,14 @@ async fn log_queue_status(
     let backoff_secs = state.backoff_duration.as_secs();
 
     let message = if state.should_fetch(tasks_in_queue) {
-        format!("⚡ Queue low: {} tasks, ready to fetch", tasks_in_queue)
+        format!(
+            "Tasks Queue low: {} tasks to compute, ready to fetch",
+            tasks_in_queue
+        )
     } else {
         let time_since_secs = time_since_last.as_secs();
         format!(
-            "⚡ Queue low: {} tasks, waiting {}s more (retry every {}s)",
+            "Tasks to compute: {} tasks, waiting {}s more (retry every {}s)",
             tasks_in_queue,
             backoff_secs.saturating_sub(time_since_secs),
             backoff_secs
@@ -245,15 +245,11 @@ async fn handle_fetch_success(
 
 /// Handle empty task response from server
 async fn handle_empty_task_response(
-    sender: &mpsc::Sender<Task>,
+    _sender: &mpsc::Sender<Task>,
     event_sender: &mpsc::Sender<Event>,
     state: &mut TaskFetchState,
 ) {
-    let current_queue_level = TASK_QUEUE_SIZE - sender.capacity();
-    let msg = format!(
-        "💤 No tasks available (queue: {} tasks)",
-        current_queue_level
-    );
+    let msg = "No tasks available yet for this node".to_string();
     let _ = event_sender
         .send(Event::task_fetcher_with_level(
             msg,
@@ -368,7 +364,7 @@ async fn handle_all_duplicates(
     let _ = event_sender
         .send(Event::task_fetcher_with_level(
             format!(
-                "🔄 All {} tasks were duplicates - backing off for {}s",
+                "All {} tasks were duplicates - backing off for {}s",
                 duplicate_count,
                 state.backoff_duration.as_secs()
             ),
@@ -389,7 +385,7 @@ async fn handle_fetch_error(
         let _ = event_sender
             .send(Event::task_fetcher_with_level(
                 format!(
-                    "⏳ Rate limited - retrying in {}s",
+                    "Rate limited - retrying in {}s",
                     state.backoff_duration.as_secs()
                 ),
                 crate::events::EventType::Error,
@@ -485,7 +481,8 @@ async fn fetch_new_tasks_batch(
             Err(OrchestratorError::Http { status: 429, .. }) => {
                 let _ = event_sender
                     .send(Event::task_fetcher_with_level(
-                        "⏳ Rate limited during batch fetch".to_string(),
+                        "Every node in the Prover Network is rate limited to 3 tasks per 3 minutes"
+                            .to_string(),
                         crate::events::EventType::Refresh,
                         LogLevel::Debug,
                     ))
@@ -538,7 +535,7 @@ async fn fetch_new_tasks_batch(
     Ok(new_tasks)
 }
 
-/// Submit proofs to the orchestrator
+/// Submits proofs to the orchestrator
 pub async fn submit_proofs(
     signing_key: SigningKey,
     orchestrator: Box<dyn Orchestrator>,
@@ -547,7 +544,6 @@ pub async fn submit_proofs(
     event_sender: mpsc::Sender<Event>,
     mut shutdown: broadcast::Receiver<()>,
     successful_tasks: TaskCache,
-    node_id: u64,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut completed_count = 0;
@@ -567,14 +563,13 @@ pub async fn submit_proofs(
                                 num_workers,
                                 &event_sender,
                                 &successful_tasks,
-                                node_id,
                             ).await {
                                 if success {
                                     completed_count += 1;
                                 }
                             }
 
-                            // Check if it's time to report stats
+                            // Check if it's time to report stats (avoid timer starvation)
                             if last_stats_time.elapsed() >= stats_interval {
                                 report_performance_stats(&event_sender, completed_count, last_stats_time).await;
                                 completed_count = 0;
@@ -586,6 +581,7 @@ pub async fn submit_proofs(
                 }
 
                 _ = tokio::time::sleep(stats_interval) => {
+                    // Fallback timer in case there's no activity
                     report_performance_stats(&event_sender, completed_count, last_stats_time).await;
                     completed_count = 0;
                     last_stats_time = std::time::Instant::now();
@@ -611,7 +607,7 @@ async fn report_performance_stats(
     };
 
     let msg = format!(
-        "📊 Performance: {} tasks in {:.1}s ({:.1} tasks/min)",
+        "Performance Status: {} tasks completed in the past {:.1}s ({:.1} tasks/min)",
         completed_count,
         elapsed.as_secs_f64(),
         tasks_per_minute
@@ -635,7 +631,6 @@ async fn process_proof_submission(
     num_workers: usize,
     event_sender: &mpsc::Sender<Event>,
     successful_tasks: &TaskCache,
-    node_id: u64,
 ) -> Option<bool> {
     // Check for duplicate submissions
     if successful_tasks.contains(&task.task_id).await {
@@ -646,7 +641,7 @@ async fn process_proof_submission(
         let _ = event_sender
             .send(Event::proof_submitter(msg, crate::events::EventType::Error))
             .await;
-        return None;
+        return None; // Skip this task
     }
 
     // Serialize proof
@@ -665,7 +660,7 @@ async fn process_proof_submission(
         .await
     {
         Ok(_) => {
-            handle_submission_success(&task, event_sender, successful_tasks, node_id).await;
+            handle_submission_success(&task, event_sender, successful_tasks).await;
             Some(true)
         }
         Err(e) => {
@@ -683,7 +678,7 @@ async fn handle_submission_success(
     node_id: u64,
 ) {
     successful_tasks.insert(task.task_id.clone()).await;
-    
+
     // 更新提交计数
     if let Err(e) = update_submission_count(node_id).await {
         let msg = format!("Failed to update submission count: {}", e);
@@ -692,7 +687,10 @@ async fn handle_submission_success(
             .await;
     }
 
-    let msg = "📤 Proof submitted".to_string();
+    let msg = format!(
+        "[Task step 3 of 3] Proof submitted (Task ID: {}) Points for this node will be updated in https://app.nexus.xyz/rewards within 10 minutes",
+        task.task_id
+    );
     let _ = event_sender
         .send(Event::proof_submitter_with_level(
             msg,
@@ -705,14 +703,14 @@ async fn handle_submission_success(
 /// 更新提交计数
 async fn update_submission_count(node_id: u64) -> io::Result<()> {
     let count_file = get_count_file_path();
-    
+
     // 确保目录存在
     if let Some(parent) = count_file.parent() {
         if !parent.exists() {
             fs::create_dir_all(parent)?;
         }
     }
-    
+
     // 读取当前内容
     let content = if count_file.exists() {
         fs::read_to_string(&count_file)?

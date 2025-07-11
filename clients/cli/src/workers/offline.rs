@@ -89,8 +89,8 @@ pub fn start_workers(
                         match authenticated_proving(&task).await {
                             Ok(proof) => {
                                 let message = format!(
-                                    "Proof completed successfully (Prover {})",
-                                    worker_id
+                                    "[Task step 2 of 3] Proof completed successfully (Task ID: {})",
+                                    task.task_id
                                 );
                                 let _ = prover_event_sender
                                     .send(Event::prover(worker_id, message, EventType::Success))
