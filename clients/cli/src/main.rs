@@ -207,14 +207,14 @@ impl AdaptiveConfig {
         let success = self.success_count.load(std::sync::atomic::Ordering::Relaxed);
         let failure = self.failure_count.load(std::sync::atomic::Ordering::Relaxed);
         let current = self.worker_count.load(std::sync::atomic::Ordering::Relaxed);
-        
+
         // 根据成功率调整工作线程数
         if success > failure && current < MAX_WORKERS {
             self.worker_count.store(std::cmp::min(current + 1, MAX_WORKERS), std::sync::atomic::Ordering::Relaxed);
         } else if failure > success && current > INITIAL_WORKERS {
             self.worker_count.store(std::cmp::max(current - 1, INITIAL_WORKERS), std::sync::atomic::Ordering::Relaxed);
         }
-        
+
         // 重置计数器
         self.success_count.store(0, std::sync::atomic::Ordering::Relaxed);
         self.failure_count.store(0, std::sync::atomic::Ordering::Relaxed);
@@ -350,7 +350,7 @@ async fn start(
                 ),
             )
         })?);
-        println!("从配置文件读取节点ID: {}", node_id.unwrap());
+        println!("Read Node ID: {} from config file\n", node_id.unwrap());
     }
 
     // 为证明者创建签名密钥。
@@ -366,19 +366,21 @@ async fn start(
     let client_id = if config_path.exists() {
         match Config::load_from_file(&config_path) {
             Ok(config) => {
-                // 首先尝试user_id，然后是node_id，最后回退到UUID
-                if !config.user_id.is_empty() {
-                    config.user_id
-                } else if !config.node_id.is_empty() {
-                    config.node_id
+                // If user has a node_id, use "cli-{node_id}" format
+                if !config.node_id.is_empty() {
+                    format!("cli-{}", config.node_id)
+                } else if !config.user_id.is_empty() {
+                    // Fallback to user_id if no node_id but user is registered
+                    format!("cli-{}", config.user_id)
                 } else {
-                    uuid::Uuid::new_v4().to_string() // 回退到随机UUID
+                    // No node_id or user_id - this shouldn't happen with current flow
+                    "anonymous".to_string()
                 }
             }
-            Err(_) => uuid::Uuid::new_v4().to_string(), // 回退到随机UUID
+            Err(_) => "anonymous".to_string(), // Fallback to anonymous
         }
     } else {
-        uuid::Uuid::new_v4().to_string() // 回退到随机UUID
+        "anonymous".to_string() // No config file = anonymous user
     };
 
     let (mut event_receiver, mut join_handles) = match node_id {
@@ -532,7 +534,7 @@ async fn start_batch_from_file_optimized(
     let mut memory_config = memory_monitor::MemoryConfig::default();
     memory_config.max_nodes = max_concurrent;
     let memory_monitor = Arc::new(memory_monitor::MemoryMonitor::new(memory_config));
-    
+
     // 启动内存监控
     memory_monitor.start_monitoring().await.map_err(|e| format!("Failed to start memory monitoring: {}", e))?;
 
@@ -561,15 +563,15 @@ async fn start_batch_from_file_optimized(
     let display_clone = display.clone();
     let env_clone = env.clone();
     let verbose_clone = verbose;
-    
+
     node_manager.start_manager(move |node_id, shutdown_sender| {
         let display = display_clone.clone();
         let env = env_clone.clone();
         let verbose = verbose_clone;
-        
+
         async move {
             // println!("[DEBUG] Node task START for node_id={}", node_id);
-            
+
             // 记录节点启动日志
             display.add_scaling_log(
                 enhanced_display::ScalingOperation::NodeStarted,
@@ -586,7 +588,7 @@ async fn start_batch_from_file_optimized(
             // 创建签名密钥
             let mut csprng = rand_core::OsRng;
             let signing_key: SigningKey = SigningKey::generate(&mut csprng);
-            
+
             let orchestrator_client = OrchestratorClient::new(env);
 
             // 启动认证工作线程
@@ -600,7 +602,7 @@ async fn start_batch_from_file_optimized(
                 node_id.to_string(),
             ).await;
             // println!("[DEBUG] Node {}: authenticated workers started", node_id);
-            
+
             // 立即发送一个初始状态事件，确保节点显示
             let _ = event_receiver.try_recv(); // 清空可能的事件
             display.update_node_status(node_id, "🔄 Workers started, waiting for tasks...".to_string()).await;
@@ -608,14 +610,14 @@ async fn start_batch_from_file_optimized(
             // 处理事件
             let mut shutdown_receiver = shutdown_sender.subscribe();
             // println!("[DEBUG] Node {}: entering event loop", node_id);
-            
+
             loop {
                 tokio::select! {
                     Some(event) = event_receiver.recv() => {
                         let event_str = event.to_string();
                         // println!("[DEBUG] Node {}: received event: {}", node_id, event_str);
                         display.update_node_status(node_id, event_str.clone()).await;
-                        
+
                         if verbose {
                             println!("[Node-{}] {}", node_id, event_str);
                         }
@@ -652,24 +654,24 @@ async fn start_batch_from_file_optimized(
     // 设置Ctrl+C信号处理
     let node_manager_clone = node_manager.clone();
     let display_clone = display.clone();
-    
+
     tokio::spawn(async move {
         if tokio::signal::ctrl_c().await.is_ok() {
             println!("\n🛑 Ctrl+C received. Starting graceful shutdown...");
-            
+
             // 记录优雅关闭日志
             display_clone.add_scaling_log(
                 enhanced_display::ScalingOperation::EmergencyScaleDown,
                 None,
                 "Ctrl+C received, graceful shutdown initiated".to_string(),
             ).await;
-            
+
             // 停止节点管理器
             node_manager_clone.stop_manager().await;
-            
+
             // 优雅关闭所有节点
             node_manager_clone.graceful_shutdown_all().await;
-            
+
             println!("✅ All nodes gracefully stopped.");
         }
     });
@@ -677,16 +679,16 @@ async fn start_batch_from_file_optimized(
     // 主循环：监控和显示状态
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-        
+
         let active_count = node_manager.active_count().await;
         let pending_count = node_manager.pending_count().await;
-        
+
         // 检查是否所有节点都已处理完毕
         if active_count == 0 && pending_count == 0 {
             println!("✅ All nodes have been processed.");
             break;
         }
-        
+
         // 检查节点管理器是否还在运行
         if !node_manager.is_monitoring().await {
             println!("⚠️ Node manager has stopped.");
@@ -696,7 +698,7 @@ async fn start_batch_from_file_optimized(
 
     // 停止内存监控
     memory_monitor.stop_monitoring();
-    
+
     println!("🎉 Optimized batch processing completed successfully!");
     Ok(())
 }
