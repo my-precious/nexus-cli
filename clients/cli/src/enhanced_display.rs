@@ -113,7 +113,7 @@ impl EnhancedDisplay {
             last_render_time: Arc::new(Mutex::new(Instant::now())),
             need_render: Arc::new(AtomicBool::new(false)),
             current_page: Arc::new(Mutex::new(1)),
-            nodes_per_page: 30,
+            nodes_per_page: 40,
             is_paused: Arc::new(AtomicBool::new(false)),
         };
         // 启动节流刷新任务
@@ -441,7 +441,6 @@ impl EnhancedDisplay {
             let proof_count = self.proof_stats_manager.read().await.get_node_count(*node_id);
             println!("   Node-{:>8} (Proofs: {:>3}): {}", node_id, proof_count, status);
         }
-        println!("───────────────────────────────────────");
     }
 
     /// 渲染伸缩操作日志
@@ -782,13 +781,13 @@ mod tests {
         let memory_monitor = Arc::new(MemoryMonitor::new_default());
         let display = EnhancedDisplay::new(memory_monitor, 10, None);
         
-        // 添加足够多的节点来测试分页（每页30个节点，需要31个节点来创建2页）
-        for i in 1..=31 {
+        // 添加足够多的节点来测试分页（每页40个节点，需要41个节点来创建2页）
+        for i in 1..=41 {
             display.update_node_status(i, "🔄 Running".to_string()).await;
         }
         
         // 验证节点数量
-        assert_eq!(display.active_node_count().await, 31);
+        assert_eq!(display.active_node_count().await, 41);
         
         // 验证初始页码应该是1
         let current_page = *display.current_page.lock().await;

@@ -194,8 +194,8 @@ impl DynamicNodeManager {
                 if adjusted_suggested > current_count && pending_count > 0 {
                     // 扩容 - 只有当调整后的建议数大于当前活跃数且有待启动节点时才扩容
                     let nodes_to_add = std::cmp::min(adjusted_suggested - current_count, pending_count);
-                    println!("🔄 Scaling UP: {} -> {} (+{} nodes, memory: {:.1}%) - PENDING NODES: {}", 
-                             current_count, current_count + nodes_to_add, nodes_to_add, usage * 100.0, pending_count);
+                    // println!("🔄 Scaling UP: {} -> {} (+{} nodes, memory: {:.1}%) - PENDING NODES: {}", 
+                    //          current_count, current_count + nodes_to_add, nodes_to_add, usage * 100.0, pending_count);
                     let mut pending = pending_nodes.write().await;
                     if let Some(node_id) = pending.pop_front() {
                         // println!("[DEBUG] spawn_node_fn will be called for node_id={}", node_id);
@@ -221,12 +221,12 @@ impl DynamicNodeManager {
                             node_id
                         });
                         // 固定启动间隔
-                        println!("⏱️ Waiting 3s before next scale-up");
+                        // println!("⏱️ Waiting 3s before next scale-up");
                         sleep(Duration::from_secs(3)).await;
                     }
                 } else if adjusted_suggested < current_count {
                     // 缩容
-                    println!("📉 Scaling DOWN: {} -> {} (memory: {:.1}%)", current_count, adjusted_suggested, usage * 100.0);
+                    // println!("📉 Scaling DOWN: {} -> {} (memory: {:.1}%)", current_count, adjusted_suggested, usage * 100.0);
                     let mut handles = node_handles.write().await;
                     if let Some(handle) = handles.pop() {
                         println!("🛑 Stopping node {} for scale-down", handle.node_id);
@@ -239,13 +239,13 @@ impl DynamicNodeManager {
                         pending.push_back(handle.node_id);
                     }
                 } else if adjusted_suggested == current_count + pending_count && pending_count > 0 {
-                    println!("⚠️ Cannot scale up further: suggested={}, current={}, pending={}, max_achievable={}", suggested, current_count, pending_count, current_count + pending_count);
+                    // println!("⚠️ Cannot scale up further: suggested={}, current={}, pending={}, max_achievable={}", suggested, current_count, pending_count, current_count + pending_count);
                 } else if pending_count == 0 && adjusted_suggested > current_count {
-                    println!("⚠️ Cannot scale up: suggested={}, current={}, but no pending nodes available", adjusted_suggested, current_count);
+                    // println!("⚠️ Cannot scale up: suggested={}, current={}, but no pending nodes available", adjusted_suggested, current_count);
                 } else if pending_count == 0 {
-                    println!("✅ All nodes are active, no pending nodes to scale");
+                    // println!("✅ All nodes are active, no pending nodes to scale");
                 } else {
-                    println!("⏸️ No scaling needed: current={}, adjusted_suggested={}, pending={}", current_count, adjusted_suggested, pending_count);
+                    // println!("⏸️ No scaling needed: current={}, adjusted_suggested={}, pending={}", current_count, adjusted_suggested, pending_count);
                 }
                 
                 // 添加详细的调试信息
