@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tokio::sync::{RwLock, Mutex};
 use chrono::{DateTime, Local};
 use crate::memory_monitor::{MemoryInfo, MemoryStatus, MemoryMonitor};
+use crate::proof_stats::ProofStatsManager;
 use regex::Regex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -56,10 +57,8 @@ impl std::fmt::Display for ScalingOperation {
 pub struct EnhancedDisplay {
     /// 节点状态信息
     node_lines: Arc<RwLock<HashMap<u64, String>>>,
-    /// 节点证明计数
-    proof_counts: Arc<RwLock<HashMap<u64, u64>>>,
-    /// 总证明数
-    total_proofs: Arc<RwLock<u64>>,
+    /// 证明统计管理器（持久化）
+    proof_stats_manager: Arc<RwLock<ProofStatsManager>>,
     /// 伸缩操作日志
     scaling_logs: Arc<RwLock<Vec<ScalingLogEntry>>>,
     /// 内存监控器
@@ -85,10 +84,29 @@ pub struct EnhancedDisplay {
 impl EnhancedDisplay {
     /// 创建新的增强显示管理器
     pub fn new(memory_monitor: Arc<MemoryMonitor>, max_log_entries: usize) -> Self {
+        // 初始化证明统计管理器
+        let proof_stats_manager = match crate::proof_stats::get_proof_stats_path() {
+            Ok(path) => {
+                match ProofStatsManager::load_from_file(&path) {
+                    Ok(manager) => {
+                        println!("📊 已加载持久化证明统计: {} 个证明", manager.get_total_proofs());
+                        manager
+                    }
+                    Err(e) => {
+                        eprintln!("⚠️ 无法加载证明统计文件: {}, 将创建新的统计", e);
+                        ProofStatsManager::new(path)
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("⚠️ 无法获取证明统计文件路径: {}, 将使用临时路径", e);
+                ProofStatsManager::new(std::path::PathBuf::from("/tmp/nexus_proof_stats.json"))
+            }
+        };
+
         let display = Self {
             node_lines: Arc::new(RwLock::new(HashMap::new())),
-            proof_counts: Arc::new(RwLock::new(HashMap::new())),
-            total_proofs: Arc::new(RwLock::new(0)),
+            proof_stats_manager: Arc::new(RwLock::new(proof_stats_manager)),
             scaling_logs: Arc::new(RwLock::new(Vec::new())),
             memory_monitor,
             last_render_hash: Arc::new(Mutex::new(0)),
@@ -232,12 +250,8 @@ impl EnhancedDisplay {
 
     /// 增加证明计数
     async fn increment_proof_count(&self, node_id: u64) {
-        let mut counts = self.proof_counts.write().await;
-        let count = counts.entry(node_id).or_insert(0);
-        *count += 1;
-
-        let mut total = self.total_proofs.write().await;
-        *total += 1;
+        let mut manager = self.proof_stats_manager.write().await;
+        manager.increment_proof_count(node_id);
     }
 
     /// 添加伸缩操作日志
@@ -383,7 +397,7 @@ impl EnhancedDisplay {
     /// 渲染节点统计
     async fn render_node_statistics(&self, lines: &HashMap<u64, String>) {
         let active_count = lines.len();
-        let total_proofs = *self.total_proofs.read().await;
+        let total_proofs = self.proof_stats_manager.read().await.get_total_proofs();
         
         // 统计成功和失败的节点数量（基于 emoji 判断）
         let successful_count = lines.values()
@@ -426,7 +440,7 @@ impl EnhancedDisplay {
 
         // 分页显示
         for (node_id, status) in node_statuses.iter().skip(start_idx).take(nodes_per_page) {
-            let proof_count = *self.proof_counts.read().await.get(node_id).unwrap_or(&0);
+            let proof_count = self.proof_stats_manager.read().await.get_node_count(*node_id);
             println!("   Node-{:>8} (Proofs: {:>3}): {}", node_id, proof_count, status);
         }
         println!("───────────────────────────────────────");
@@ -461,12 +475,24 @@ impl EnhancedDisplay {
 
     /// 获取总证明数
     pub async fn total_proof_count(&self) -> u64 {
-        *self.total_proofs.read().await
+        self.proof_stats_manager.read().await.get_total_proofs()
     }
 
     /// 获取伸缩日志数量
     pub async fn scaling_log_count(&self) -> usize {
         self.scaling_logs.read().await.len()
+    }
+
+    /// 强制保存证明统计数据
+    pub async fn save_proof_stats(&self) -> Result<(), std::io::Error> {
+        let mut manager = self.proof_stats_manager.write().await;
+        manager.force_save()
+    }
+
+    /// 重置证明统计数据
+    pub async fn reset_proof_stats(&self) -> Result<(), std::io::Error> {
+        let mut manager = self.proof_stats_manager.write().await;
+        manager.reset()
     }
 
     /// 启动节流刷新任务（每1秒刷新一次）

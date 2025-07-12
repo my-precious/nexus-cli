@@ -11,6 +11,7 @@ mod logging;
 mod memory_monitor;
 mod dynamic_node_manager;
 mod enhanced_display;
+mod proof_stats;
 #[path = "proto/nexus.orchestrator.rs"]
 mod nexus_orchestrator;
 mod orchestrator;
@@ -690,6 +691,13 @@ async fn start_batch_from_file_optimized(
             // 优雅关闭所有节点
             node_manager_clone.graceful_shutdown_all().await;
 
+            // 保存证明统计数据
+            if let Err(e) = display_clone.save_proof_stats().await {
+                eprintln!("⚠️ 保存证明统计数据失败: {}", e);
+            } else {
+                println!("💾 证明统计数据已保存");
+            }
+
             println!("✅ All nodes gracefully stopped.");
         }
     });
@@ -968,6 +976,13 @@ async fn start_batch_with_restart_signal(
             // 优雅关闭所有节点
             node_manager_clone.graceful_shutdown_all().await;
 
+            // 保存证明统计数据
+            if let Err(e) = display_clone.save_proof_stats().await {
+                eprintln!("⚠️ 保存证明统计数据失败: {}", e);
+            } else {
+                println!("💾 证明统计数据已保存");
+            }
+
             println!("✅ All nodes gracefully stopped.");
         }
     });
@@ -1018,6 +1033,13 @@ async fn start_batch_with_restart_signal(
 
     // 停止内存监控
     memory_monitor.stop_monitoring();
+
+    // 保存证明统计数据
+    if let Err(e) = display.save_proof_stats().await {
+        eprintln!("⚠️ 保存证明统计数据失败: {}", e);
+    } else {
+        println!("💾 证明统计数据已保存");
+    }
 
     println!("🎉 Batch processing cycle completed!");
     Ok(())
