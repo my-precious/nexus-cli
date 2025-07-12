@@ -6,6 +6,9 @@ use tokio::sync::{RwLock, Mutex};
 use chrono::{DateTime, Local};
 use crate::memory_monitor::{MemoryInfo, MemoryStatus, MemoryMonitor};
 use regex::Regex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+use crossterm::event;
 
 /// 事件类型枚举，用于确定 emoji 图标
 #[derive(Debug, Clone, PartialEq)]
@@ -67,12 +70,20 @@ pub struct EnhancedDisplay {
     start_time: DateTime<Local>,
     /// 最大日志条目数
     max_log_entries: usize,
+    /// 最后渲染时间（节流用）
+    last_render_time: Arc<Mutex<Instant>>,
+    /// 是否需要渲染
+    need_render: Arc<AtomicBool>,
+    /// 当前页码（分页用）
+    current_page: Arc<Mutex<usize>>,
+    /// 每页节点数
+    nodes_per_page: usize,
 }
 
 impl EnhancedDisplay {
     /// 创建新的增强显示管理器
     pub fn new(memory_monitor: Arc<MemoryMonitor>, max_log_entries: usize) -> Self {
-        Self {
+        let display = Self {
             node_lines: Arc::new(RwLock::new(HashMap::new())),
             proof_counts: Arc::new(RwLock::new(HashMap::new())),
             total_proofs: Arc::new(RwLock::new(0)),
@@ -81,7 +92,16 @@ impl EnhancedDisplay {
             last_render_hash: Arc::new(Mutex::new(0)),
             start_time: Local::now(),
             max_log_entries,
-        }
+            last_render_time: Arc::new(Mutex::new(Instant::now())),
+            need_render: Arc::new(AtomicBool::new(false)),
+            current_page: Arc::new(Mutex::new(1)),
+            nodes_per_page: 30,
+        };
+        // 启动节流刷新任务
+        display.spawn_throttle_render_task();
+        // 启动翻页监听任务
+        display.spawn_paging_input_task();
+        display
     }
 
     /// 根据状态消息判断事件类型
@@ -183,11 +203,8 @@ impl EnhancedDisplay {
         if status.contains("Stopped") || status.contains("Shutdown") {
             let mut lines = self.node_lines.write().await;
             if lines.remove(&node_id).is_some() {
-                // 触发重新渲染
-                let display = self.clone();
-                tokio::spawn(async move {
-                    display.render_display_optimized().await;
-                });
+                // 只设置 need_render 标志
+                self.need_render.store(true, Ordering::SeqCst);
             }
             return;
         }
@@ -205,12 +222,8 @@ impl EnhancedDisplay {
                 let mut lines = self.node_lines.write().await;
                 lines.insert(node_id, formatted_status.clone());
             }
-            
-            // 使用 spawn 来避免阻塞调用线程
-            let display = self.clone();
-            tokio::spawn(async move {
-                display.render_display_optimized().await;
-            });
+            // 只设置 need_render 标志
+            self.need_render.store(true, Ordering::SeqCst);
         }
     }
 
@@ -383,7 +396,14 @@ impl EnhancedDisplay {
 
     /// 渲染节点列表
     async fn render_node_list(&self, lines: &HashMap<u64, String>) {
-        use chrono::NaiveDateTime;
+        let total_nodes = lines.len();
+        let nodes_per_page = self.nodes_per_page;
+        let total_pages = ((total_nodes + nodes_per_page - 1) / nodes_per_page).max(1);
+        let current_page = *self.current_page.lock().await;
+        let current_page = current_page.min(total_pages).max(1);
+        let start_idx = (current_page - 1) * nodes_per_page;
+        let end_idx = (start_idx + nodes_per_page).min(total_nodes);
+
         if lines.is_empty() {
             println!("🖥️  Active Nodes:");
             println!("   No active nodes");
@@ -391,23 +411,15 @@ impl EnhancedDisplay {
             return;
         }
 
-        println!("🖥️  Active Nodes:");
-        // 用正则提取 [YYYY-MM-DD HH:MM:SS] 时间戳
-        let re = Regex::new(r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]").unwrap();
-        let mut node_statuses: Vec<(u64, String, Option<NaiveDateTime>)> = lines.iter().map(|(id, status)| {
-            let time = re.captures(status)
-                .and_then(|cap| cap.get(1))
-                .and_then(|m| NaiveDateTime::parse_from_str(m.as_str(), "%Y-%m-%d %H:%M:%S").ok());
-            (*id, status.clone(), time)
-        }).collect();
+        println!("🖥️  Active Nodes (Page {}/{} | n:下一页 p:上一页 [数字]:跳转):", current_page, total_pages);
+        // 直接按 node_id 升序排序
+        let mut node_statuses: Vec<(u64, String)> = lines.iter().map(|(id, status)| (*id, status.clone())).collect();
+        node_statuses.sort_by_key(|x| x.0);
 
-        // 按时间降序排序（无时间的排最后）
-        node_statuses.sort_by(|a, b| b.2.cmp(&a.2));
-
-        // 只保留最近20条
-        for (node_id, status, _) in node_statuses.iter().take(20) {
+        // 分页显示
+        for (node_id, status) in node_statuses.iter().skip(start_idx).take(nodes_per_page) {
             let proof_count = *self.proof_counts.read().await.get(node_id).unwrap_or(&0);
-            println!("   Node-{} (Proofs: {}): {}", node_id, proof_count, status);
+            println!("   Node-{:>8} (Proofs: {:>3}): {}", node_id, proof_count, status);
         }
         println!("───────────────────────────────────────");
     }
@@ -447,6 +459,52 @@ impl EnhancedDisplay {
     /// 获取伸缩日志数量
     pub async fn scaling_log_count(&self) -> usize {
         self.scaling_logs.read().await.len()
+    }
+
+    /// 启动节流刷新任务（每1秒刷新一次）
+    fn spawn_throttle_render_task(&self) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                if this.need_render.swap(false, Ordering::SeqCst) {
+                    let lines = this.node_lines.read().await.clone();
+                    let logs = this.scaling_logs.read().await.clone();
+                    this.render_display(&lines, &logs).await;
+                    let mut last_time = this.last_render_time.lock().await;
+                    *last_time = Instant::now();
+                }
+            }
+        });
+    }
+
+    /// 启动翻页监听任务（监听按键 n/p/数字切换页码，无需回车）
+    fn spawn_paging_input_task(&self) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            use crossterm::event::{self, Event, KeyCode};
+            use std::time::Duration;
+            loop {
+                // 100ms 轮询一次
+                if event::poll(Duration::from_millis(100)).unwrap_or(false) {
+                    if let Ok(Event::Key(key_event)) = event::read() {
+                        let mut page = this.current_page.lock().await;
+                        match key_event.code {
+                            KeyCode::Char('n') => { *page += 1; this.need_render.store(true, std::sync::atomic::Ordering::SeqCst); },
+                            KeyCode::Char('p') => { if *page > 1 { *page -= 1; this.need_render.store(true, std::sync::atomic::Ordering::SeqCst); } },
+                            KeyCode::Char(c) if c.is_ascii_digit() => {
+                                let num = c.to_digit(10).unwrap() as usize;
+                                *page = num.max(1);
+                                this.need_render.store(true, std::sync::atomic::Ordering::SeqCst);
+                            },
+                            _ => {}
+                        }
+                    }
+                }
+                // 避免 busy loop
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        });
     }
 }
 
