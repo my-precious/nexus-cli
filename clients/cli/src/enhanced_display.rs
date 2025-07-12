@@ -235,11 +235,11 @@ impl EnhancedDisplay {
                 &cleaned_status
             };
             
-            // 截取状态信息到最大长度（比如80个字符）
+            // 截取状态信息到最大长度（比如100个字符），按字符安全截断
             let max_length = 100;
-            let truncated_status = if final_status.len() > max_length {
-                let truncated = &final_status[..max_length];
-                // 确保不在单词中间截断
+            let truncated_status = if final_status.chars().count() > max_length {
+                let truncated: String = final_status.chars().take(max_length).collect();
+                // 确保不在单词中间截断（可选）
                 if let Some(last_space) = truncated.rfind(' ') {
                     format!("{}...", &truncated[..last_space])
                 } else {
