@@ -21,6 +21,7 @@ pub struct DynamicNodeManagerConfig {
     pub max_start_interval: u64, // 最大启动间隔（秒）
     pub initial_nodes: usize,    // 初始启动节点数
     pub max_nodes: usize,         // 最大节点数
+    pub start_interval: u64,      // 节点启动间隔（秒）
 }
 
 impl Default for DynamicNodeManagerConfig {
@@ -30,6 +31,7 @@ impl Default for DynamicNodeManagerConfig {
             max_start_interval: 10,
             initial_nodes: 2,
             max_nodes: usize::MAX,
+            start_interval: 3,      // 默认3秒启动间隔
         }
     }
 }
@@ -100,8 +102,8 @@ impl DynamicNodeManager {
         let total_nodes = self.total_nodes;
 
         tokio::spawn(async move {
-            println!("🚀 Dynamic node manager starting with config: initial_nodes={}, fixed_interval=3s", 
-                     config.initial_nodes);
+            println!("🚀 Dynamic node manager starting with config: initial_nodes={}, start_interval={}s", 
+                     config.initial_nodes, config.start_interval);
             
             // 检查初始化的节点数量
             let initial_pending_count = pending_nodes.read().await.len();
@@ -142,7 +144,7 @@ impl DynamicNodeManager {
                     println!("⚠️ No more pending nodes available for initial startup");
                     break;
                 }
-                sleep(Duration::from_secs(3)).await;
+                sleep(Duration::from_secs(config.start_interval)).await;
             }
 
             println!("✅ Initial startup completed. Active nodes: {}", active_nodes.read().await.len());
@@ -179,8 +181,8 @@ impl DynamicNodeManager {
                 };
 
                 let usage = mem_info.usage_ratio;
-                // 固定启动间隔为3秒
-                let interval = 3;
+                // 使用配置的启动间隔
+                let interval = config.start_interval;
 
                 // 计算实际可达到的最大节点数（当前活跃 + 待启动）
                 let max_achievable = current_count + pending_count;
@@ -188,8 +190,8 @@ impl DynamicNodeManager {
                 // 限制建议的节点数不超过实际可达到的最大值
                 let adjusted_suggested = std::cmp::min(suggested, max_achievable);
 
-                println!("📊 Scaling check: current={}, suggested={}, adjusted={}, pending={}, memory={:.1}%, interval=3s", 
-                         current_count, suggested, adjusted_suggested, pending_count, usage * 100.0);
+                println!("📊 Scaling check: current={}, suggested={}, adjusted={}, pending={}, memory={:.1}%, start_interval={}s", 
+                         current_count, suggested, adjusted_suggested, pending_count, usage * 100.0, interval);
 
                 if adjusted_suggested > current_count && pending_count > 0 {
                     // 扩容 - 只有当调整后的建议数大于当前活跃数且有待启动节点时才扩容
@@ -220,9 +222,9 @@ impl DynamicNodeManager {
                             // println!("[DEBUG] async task END for node_id={}", node_id);
                             node_id
                         });
-                        // 固定启动间隔
-                        // println!("⏱️ Waiting 3s before next scale-up");
-                        sleep(Duration::from_secs(3)).await;
+                        // 使用配置的启动间隔
+                        // println!("⏱️ Waiting {}s before next scale-up", interval);
+                        sleep(Duration::from_secs(interval)).await;
                     }
                 } else if adjusted_suggested < current_count {
                     // 缩容
@@ -254,7 +256,7 @@ impl DynamicNodeManager {
                 // println!("🔍 DEBUG: suggested = {}, adjusted_suggested = {}, current_count = {}, pending_count = {}", 
                 //          suggested, adjusted_suggested, current_count, pending_count);
                 
-                // 检查周期
+                // 检查周期 - 使用内存监控器的检查间隔
                 let check_interval = memory_monitor.config().check_interval;
                 println!("⏰ Next scaling check in {}s", check_interval);
                 sleep(Duration::from_secs(check_interval)).await;
@@ -329,6 +331,7 @@ mod tests {
             max_start_interval: 2,
             initial_nodes: 2,
             max_nodes: usize::MAX,
+            start_interval: 1,
         };
         let manager = DynamicNodeManager::new(all_nodes.clone(), memory_monitor.clone(), Some(config));
         let started = Arc::new(AtomicUsize::new(0));
@@ -382,6 +385,7 @@ mod tests {
             max_start_interval: 2,
             initial_nodes: 2,
             max_nodes: usize::MAX,
+            start_interval: 1,
         };
         let manager = DynamicNodeManager::new(all_nodes.clone(), memory_monitor.clone(), Some(config));
         let started = Arc::new(AtomicUsize::new(0));

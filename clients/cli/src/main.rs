@@ -576,6 +576,7 @@ async fn start_batch_from_file_optimized(
         max_start_interval: start_delay * 3, // 最大启动间隔为原始延迟的3倍
         initial_nodes: std::cmp::min(5, max_concurrent), // 初始启动2个节点
         max_nodes: all_nodes.len(), // 最大节点数不超过实际可用节点数
+        start_interval: 3, // 新增，固定3秒启动间隔
     };
 
     // 创建动态节点管理器
@@ -877,6 +878,7 @@ async fn start_batch_with_restart_signal(
         max_start_interval: start_delay * 3, // 最大启动间隔为原始延迟的3倍
         initial_nodes: std::cmp::min(2, max_concurrent), // 初始启动2个节点
         max_nodes: all_nodes.len(), // 最大节点数不超过实际可用节点数
+        start_interval: 3, // 新增，固定3秒启动间隔
     };
 
     // 创建动态节点管理器
