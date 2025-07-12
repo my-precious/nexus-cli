@@ -566,7 +566,7 @@ async fn start_batch_from_file_optimized(
     // 创建增强显示管理器
     let display = Arc::new(enhanced_display::EnhancedDisplay::new(
         memory_monitor.clone(),
-        20, // 最大日志条目数
+        30, // 最大日志条目数
         Some(filename),
     ));
 
@@ -574,7 +574,7 @@ async fn start_batch_from_file_optimized(
     let manager_config = dynamic_node_manager::DynamicNodeManagerConfig {
         min_start_interval: 1, // 初始启动间隔固定为1秒，不受start_delay影响
         max_start_interval: start_delay * 3, // 最大启动间隔为原始延迟的3倍
-        initial_nodes: std::cmp::min(2, max_concurrent), // 初始启动2个节点
+        initial_nodes: std::cmp::min(5, max_concurrent), // 初始启动2个节点
         max_nodes: all_nodes.len(), // 最大节点数不超过实际可用节点数
     };
 

@@ -41,7 +41,7 @@ impl Event {
         Self {
             worker: kind,
             msg,
-            timestamp: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            timestamp: Local::now().format("%H:%M:%S").to_string(),
             event_type,
             log_level: LogLevel::Info,
         }
@@ -56,7 +56,7 @@ impl Event {
         Self {
             worker: kind,
             msg,
-            timestamp: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            timestamp: Local::now().format("%H:%M:%S").to_string(),
             event_type,
             log_level,
         }

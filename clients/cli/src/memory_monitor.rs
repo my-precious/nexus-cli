@@ -32,7 +32,7 @@ impl Default for MemoryConfig {
             safe_threshold: 0.8,    // 70% 以下为安全
             warning_threshold: 0.88, // 80% 以下为警告
             danger_threshold: 0.95,  // 90% 以下为危险
-            check_interval: 5,      // 每5秒检查一次
+            check_interval: 10,      // 每5秒检查一次
             min_nodes: 10,
             max_nodes: 50,
             initial_nodes: 5,

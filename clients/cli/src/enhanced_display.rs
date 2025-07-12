@@ -6,10 +6,8 @@ use tokio::sync::{RwLock, Mutex};
 use chrono::{DateTime, Local};
 use crate::memory_monitor::{MemoryInfo, MemoryStatus, MemoryMonitor};
 use crate::proof_stats::ProofStatsManager;
-use regex::Regex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
-use crossterm::event;
 
 /// 事件类型枚举，用于确定 emoji 图标
 #[derive(Debug, Clone, PartialEq)]
@@ -323,7 +321,7 @@ impl EnhancedDisplay {
     }
 
     /// 渲染显示
-    async fn render_display(&self, lines: &HashMap<u64, String>, logs: &[ScalingLogEntry]) {
+    async fn render_display(&self, lines: &HashMap<u64, String>, _logs: &[ScalingLogEntry]) {
         // 清屏并移动到顶部
         print!("\x1b[2J\x1b[H");
 
@@ -347,12 +345,12 @@ impl EnhancedDisplay {
         // 节点状态列表
         self.render_node_list(lines).await;
 
-        // 伸缩操作日志
-        self.render_scaling_logs(logs);
+        // 伸缩操作日志 - 已移除控制台显示
+        // self.render_scaling_logs(logs);
 
         // 操作提示
         println!("───────────────────────────────────────");
-        println!("💡 Press Ctrl+C to stop all miners | Space: Pause/Resume | n/p: Next/Prev page");
+        println!("💡 Press Ctrl+C to stop all miners | Space: Pause/Resume | n/p: Next/Prev page | Auto: 60s");
         println!("📊 Memory-based auto-scaling enabled");
 
         // 强制输出刷新
@@ -424,7 +422,7 @@ impl EnhancedDisplay {
         let current_page = *self.current_page.lock().await;
         let current_page = current_page.min(total_pages).max(1);
         let start_idx = (current_page - 1) * nodes_per_page;
-        let end_idx = (start_idx + nodes_per_page).min(total_nodes);
+        let _end_idx = (start_idx + nodes_per_page).min(total_nodes);
 
         if lines.is_empty() {
             println!("🖥️  Active Nodes:");
@@ -516,27 +514,55 @@ impl EnhancedDisplay {
         });
     }
 
-    /// 启动翻页监听任务（监听按键 n/p/数字切换页码，空格暂停/恢复，无需回车）
+    /// 启动翻页监听任务（监听按键 n/p/数字切换页码，空格暂停/恢复，60秒自动循环翻页）
     fn spawn_paging_input_task(&self) {
         let this = self.clone();
         tokio::spawn(async move {
             use crossterm::event::{self, Event, KeyCode};
             use std::time::Duration;
+            let mut last_auto_page_time = Instant::now();
+            let auto_page_interval = Duration::from_secs(60); // 60秒自动翻页
+            
             loop {
-                // 100ms 轮询一次
+                // 检查是否需要自动翻页
+                let now = Instant::now();
+                if now.duration_since(last_auto_page_time) >= auto_page_interval {
+                    // 获取当前节点数量和总页数
+                    let total_nodes = this.node_lines.read().await.len();
+                    let nodes_per_page = this.nodes_per_page;
+                    let total_pages = ((total_nodes + nodes_per_page - 1) / nodes_per_page).max(1);
+                    
+                    if total_pages > 1 {
+                        // 自动翻到下一页，如果已经是最后一页则回到第一页
+                        let mut page = this.current_page.lock().await;
+                        if *page >= total_pages {
+                            *page = 1; // 回到第一页
+                        } else {
+                            *page += 1; // 翻到下一页
+                        }
+                        this.need_render.store(true, std::sync::atomic::Ordering::SeqCst);
+                        last_auto_page_time = now;
+                    }
+                }
+                
+                // 100ms 轮询一次键盘输入
                 if event::poll(Duration::from_millis(100)).unwrap_or(false) {
                     if let Ok(Event::Key(key_event)) = event::read() {
                         match key_event.code {
                             KeyCode::Char('n') => { 
                                 let mut page = this.current_page.lock().await;
                                 *page += 1; 
-                                this.need_render.store(true, std::sync::atomic::Ordering::SeqCst); 
+                                this.need_render.store(true, std::sync::atomic::Ordering::SeqCst);
+                                // 重置自动翻页计时器
+                                last_auto_page_time = Instant::now();
                             },
                             KeyCode::Char('p') => { 
                                 let mut page = this.current_page.lock().await;
                                 if *page > 1 { 
                                     *page -= 1; 
-                                    this.need_render.store(true, std::sync::atomic::Ordering::SeqCst); 
+                                    this.need_render.store(true, std::sync::atomic::Ordering::SeqCst);
+                                    // 重置自动翻页计时器
+                                    last_auto_page_time = Instant::now();
                                 } 
                             },
                             KeyCode::Char(c) if c.is_ascii_digit() => {
@@ -544,6 +570,8 @@ impl EnhancedDisplay {
                                 let num = c.to_digit(10).unwrap() as usize;
                                 *page = num.max(1);
                                 this.need_render.store(true, std::sync::atomic::Ordering::SeqCst);
+                                // 重置自动翻页计时器
+                                last_auto_page_time = Instant::now();
                             },
                             KeyCode::Char(' ') => {
                                 // 空格键：切换暂停/恢复状态
@@ -579,10 +607,10 @@ pub async fn demo_emoji_processing() {
     // 演示不同类型的状态消息
     let test_messages = vec![
         "Success: Task completed successfully",
-        "Error: Failed to fetch tasks: Reqwest error: error sending request for url (https://beta.orchestrator.nexus.xyz/v3/tasks/12896956), status 502: <html>502 Bad Gateway</html>",
+        "Error: Failed to fetch tasks: error request for url , status 502",
         "Refresh: Fetching tasks...",
         "Shutdown: Node stopped",
-        "Error: Failed to fetch tasks: status 503: <!DOCTYPE html>503 Service Unavailable</html>",
+        "Error: Failed to fetch tasks: status 503",
         "Success: Proof submitted successfully",
         "Refresh: No tasks available yet for this node",
     ];
@@ -596,6 +624,7 @@ pub async fn demo_emoji_processing() {
     
     println!("✅ 演示完成！现在批量模式下的节点状态也会显示 emoji 了。");
     println!("⏸️  新增功能：按空格键可以暂停/恢复日志刷新！");
+    println!("🔄 新增功能：每60秒自动循环翻页，手动翻页会重置计时器！");
 }
 
 #[cfg(test)]
@@ -606,7 +635,7 @@ mod tests {
     #[tokio::test]
     async fn test_enhanced_display_creation() {
         let memory_monitor = Arc::new(MemoryMonitor::new_default());
-        let display = EnhancedDisplay::new(memory_monitor, 10);
+        let display = EnhancedDisplay::new(memory_monitor, 10, None);
         
         assert_eq!(display.active_node_count().await, 0);
         assert_eq!(display.total_proof_count().await, 0);
@@ -616,7 +645,7 @@ mod tests {
     #[tokio::test]
     async fn test_node_status_update() {
         let memory_monitor = Arc::new(MemoryMonitor::new_default());
-        let display = EnhancedDisplay::new(memory_monitor, 10);
+        let display = EnhancedDisplay::new(memory_monitor, 10, None);
         
         display.update_node_status(1, "🔄 Running".to_string()).await;
         assert_eq!(display.active_node_count().await, 1);
@@ -628,7 +657,7 @@ mod tests {
     #[tokio::test]
     async fn test_scaling_logs() {
         let memory_monitor = Arc::new(MemoryMonitor::new_default());
-        let display = EnhancedDisplay::new(memory_monitor, 3);
+        let display = EnhancedDisplay::new(memory_monitor, 3, None);
         
         display.add_scaling_log(
             ScalingOperation::ScaleUp,
@@ -653,7 +682,7 @@ mod tests {
     #[tokio::test]
     async fn test_proof_counting() {
         let memory_monitor = Arc::new(MemoryMonitor::new_default());
-        let display = EnhancedDisplay::new(memory_monitor, 10);
+        let display = EnhancedDisplay::new(memory_monitor, 10, None);
         
         // 更新包含证明提交的状态
         display.update_node_status(1, "Proof submitted successfully".to_string()).await;
@@ -735,7 +764,7 @@ mod tests {
     #[tokio::test]
     async fn test_pause_functionality() {
         let memory_monitor = Arc::new(MemoryMonitor::new_default());
-        let display = EnhancedDisplay::new(memory_monitor, 10);
+        let display = EnhancedDisplay::new(memory_monitor, 10, None);
         
         // 初始状态应该是未暂停
         // 注意：由于 is_paused 是私有的，我们通过行为来测试
@@ -746,5 +775,23 @@ mod tests {
         
         // 验证节点状态已更新
         assert_eq!(display.active_node_count().await, 2);
+    }
+
+    #[tokio::test]
+    async fn test_auto_paging_functionality() {
+        let memory_monitor = Arc::new(MemoryMonitor::new_default());
+        let display = EnhancedDisplay::new(memory_monitor, 10, None);
+        
+        // 添加足够多的节点来测试分页（每页30个节点，需要31个节点来创建2页）
+        for i in 1..=31 {
+            display.update_node_status(i, "🔄 Running".to_string()).await;
+        }
+        
+        // 验证节点数量
+        assert_eq!(display.active_node_count().await, 31);
+        
+        // 验证初始页码应该是1
+        let current_page = *display.current_page.lock().await;
+        assert_eq!(current_page, 1);
     }
 } 

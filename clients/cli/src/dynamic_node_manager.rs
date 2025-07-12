@@ -100,8 +100,8 @@ impl DynamicNodeManager {
         let total_nodes = self.total_nodes;
 
         tokio::spawn(async move {
-            println!("🚀 Dynamic node manager starting with config: initial_nodes={}, min_interval={}s, max_interval={}s", 
-                     config.initial_nodes, config.min_start_interval, config.max_start_interval);
+            println!("🚀 Dynamic node manager starting with config: initial_nodes={}, fixed_interval=3s", 
+                     config.initial_nodes);
             
             // 检查初始化的节点数量
             let initial_pending_count = pending_nodes.read().await.len();
@@ -142,7 +142,7 @@ impl DynamicNodeManager {
                     println!("⚠️ No more pending nodes available for initial startup");
                     break;
                 }
-                sleep(Duration::from_secs(config.min_start_interval)).await;
+                sleep(Duration::from_secs(3)).await;
             }
 
             println!("✅ Initial startup completed. Active nodes: {}", active_nodes.read().await.len());
@@ -178,15 +178,9 @@ impl DynamicNodeManager {
                     }
                 };
 
-                // 动态调整启动间隔
                 let usage = mem_info.usage_ratio;
-                let interval = if usage < memory_monitor.config().safe_threshold {
-                    config.min_start_interval
-                } else if usage < memory_monitor.config().warning_threshold {
-                    (config.min_start_interval + config.max_start_interval) / 2
-                } else {
-                    config.max_start_interval
-                };
+                // 固定启动间隔为3秒
+                let interval = 3;
 
                 // 计算实际可达到的最大节点数（当前活跃 + 待启动）
                 let max_achievable = current_count + pending_count;
@@ -194,8 +188,8 @@ impl DynamicNodeManager {
                 // 限制建议的节点数不超过实际可达到的最大值
                 let adjusted_suggested = std::cmp::min(suggested, max_achievable);
 
-                println!("📊 Scaling check: current={}, suggested={}, adjusted={}, pending={}, memory={:.1}%, interval={}s", 
-                         current_count, suggested, adjusted_suggested, pending_count, usage * 100.0, interval);
+                println!("📊 Scaling check: current={}, suggested={}, adjusted={}, pending={}, memory={:.1}%, interval=3s", 
+                         current_count, suggested, adjusted_suggested, pending_count, usage * 100.0);
 
                 if adjusted_suggested > current_count && pending_count > 0 {
                     // 扩容 - 只有当调整后的建议数大于当前活跃数且有待启动节点时才扩容
@@ -226,9 +220,9 @@ impl DynamicNodeManager {
                             // println!("[DEBUG] async task END for node_id={}", node_id);
                             node_id
                         });
-                        // 智能启动间隔
-                        println!("⏱️ Waiting {}s before next scale-up", interval);
-                        sleep(Duration::from_secs(interval)).await;
+                        // 固定启动间隔
+                        println!("⏱️ Waiting 3s before next scale-up");
+                        sleep(Duration::from_secs(3)).await;
                     }
                 } else if adjusted_suggested < current_count {
                     // 缩容

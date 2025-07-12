@@ -14,6 +14,8 @@ NC='\033[0m' # No Color
 # 应用程序标题
 APP_TITLE="Nexus CLI 自动重启"
 
+NODE_FILE_NAME="$HOME/Desktop/nodes1.txt"
+
 # 检查必要的文件
 check_requirements() {
     echo -e "${BLUE}🔍 检查系统要求...${NC}"
@@ -27,10 +29,9 @@ check_requirements() {
     fi
     
     # 检查节点列表文件
-    NODES_FILE="$HOME/.nexus/nodes.txt"
-    if [ ! -f "$NODES_FILE" ]; then
+    if [ ! -f "$NODE_FILE_NAME" ]; then
         echo -e "${RED}❌ 错误: 找不到节点列表文件${NC}"
-        echo -e "${YELLOW}请创建文件: $NODES_FILE${NC}"
+        echo -e "${YELLOW}请创建文件: $NODE_FILE_NAME${NC}"
         return 1
     fi
     
@@ -46,7 +47,7 @@ show_startup_info() {
     echo -e "${BLUE}═══════════════════════════════════════${NC}"
     echo ""
     echo -e "${GREEN}🚀 启动 Nexus CLI 批量处理${NC}"
-    echo -e "${YELLOW}📁 节点文件: $HOME/.nexus/nodes.txt${NC}"
+    echo -e "${YELLOW}📁 节点文件: $NODE_FILE_NAME${NC}"
     echo -e "${YELLOW}⏰ 重启间隔: 40 分钟${NC}"
     echo -e "${YELLOW}⏳ 优雅关闭: 20 秒${NC}"
     echo -e "${YELLOW}🔄 最大并发: 80 节点${NC}"
@@ -74,7 +75,7 @@ main() {
     
     # 执行 CLI 命令
     "$CLI_PATH" batch-file \
-        --file "$HOME/.nexus/nodes.txt" \
+        --file "$NODE_FILE_NAME" \
         --max-concurrent 80 \
         --restart-interval-minutes 40 \
         --restart-grace-period 20
