@@ -557,10 +557,17 @@ async fn start_batch_from_file_optimized(
     // 启动内存监控
     memory_monitor.start_monitoring().await.map_err(|e| format!("Failed to start memory monitoring: {}", e))?;
 
+    // 从文件路径中提取文件名（不包含扩展名）
+    let filename = std::path::Path::new(file_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("default");
+
     // 创建增强显示管理器
     let display = Arc::new(enhanced_display::EnhancedDisplay::new(
         memory_monitor.clone(),
         20, // 最大日志条目数
+        Some(filename),
     ));
 
     // 创建动态节点管理器配置
@@ -851,10 +858,17 @@ async fn start_batch_with_restart_signal(
     // 启动内存监控
     memory_monitor.start_monitoring().await.map_err(|e| format!("Failed to start memory monitoring: {}", e))?;
 
+    // 从文件路径中提取文件名（不包含扩展名）
+    let filename = std::path::Path::new(file_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("default");
+
     // 创建增强显示管理器
     let display = Arc::new(enhanced_display::EnhancedDisplay::new(
         memory_monitor.clone(),
         20, // 最大日志条目数
+        Some(filename),
     ));
 
     // 创建动态节点管理器配置

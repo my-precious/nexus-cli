@@ -1,0 +1,98 @@
+#!/bin/bash
+
+# Nexus CLI 自动重启应用程序
+# 版本: 1.0
+# 作者: Nexus CLI Team
+
+# 设置颜色
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# 应用程序标题
+APP_TITLE="Nexus CLI 自动重启"
+
+# 检查必要的文件
+check_requirements() {
+    echo -e "${BLUE}🔍 检查系统要求...${NC}"
+    
+    # 检查 CLI 可执行文件
+    CLI_PATH="$HOME/nexus-cli/clients/cli/target/release/nexus-network"
+    if [ ! -f "$CLI_PATH" ]; then
+        echo -e "${RED}❌ 错误: 找不到 Nexus CLI 可执行文件${NC}"
+        echo -e "${YELLOW}请确保已编译 CLI: cargo build --release${NC}"
+        return 1
+    fi
+    
+    # 检查节点列表文件
+    NODES_FILE="$HOME/.nexus/nodes.txt"
+    if [ ! -f "$NODES_FILE" ]; then
+        echo -e "${RED}❌ 错误: 找不到节点列表文件${NC}"
+        echo -e "${YELLOW}请创建文件: $NODES_FILE${NC}"
+        return 1
+    fi
+    
+    echo -e "${GREEN}✅ 系统检查通过${NC}"
+    return 0
+}
+
+# 显示启动信息
+show_startup_info() {
+    clear
+    echo -e "${BLUE}═══════════════════════════════════════${NC}"
+    echo -e "${BLUE}    $APP_TITLE${NC}"
+    echo -e "${BLUE}═══════════════════════════════════════${NC}"
+    echo ""
+    echo -e "${GREEN}🚀 启动 Nexus CLI 批量处理${NC}"
+    echo -e "${YELLOW}📁 节点文件: $HOME/.nexus/nodes.txt${NC}"
+    echo -e "${YELLOW}⏰ 重启间隔: 40 分钟${NC}"
+    echo -e "${YELLOW}⏳ 优雅关闭: 20 秒${NC}"
+    echo -e "${YELLOW}🔄 最大并发: 80 节点${NC}"
+    echo ""
+    echo -e "${BLUE}按 Ctrl+C 停止程序${NC}"
+    echo -e "${BLUE}═══════════════════════════════════════${NC}"
+    echo ""
+}
+
+# 主函数
+main() {
+    # 检查系统要求
+    if ! check_requirements; then
+        echo -e "${RED}❌ 系统要求检查失败，程序退出${NC}"
+        read -p "按任意键退出..."
+        exit 1
+    fi
+    
+    # 显示启动信息
+    show_startup_info
+    
+    # 启动 CLI
+    echo -e "${GREEN}🚀 正在启动 Nexus CLI...${NC}"
+    echo ""
+    
+    # 执行 CLI 命令
+    "$CLI_PATH" batch-file \
+        --file "$HOME/.nexus/nodes.txt" \
+        --max-concurrent 80 \
+        --restart-interval-minutes 40 \
+        --restart-grace-period 20
+    
+    # 检查退出状态
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}✅ Nexus CLI 正常退出${NC}"
+    else
+        echo -e "${RED}❌ Nexus CLI 异常退出${NC}"
+    fi
+    
+    echo ""
+    echo -e "${BLUE}程序结束，按任意键退出...${NC}"
+    read -n 1
+}
+
+# 捕获 Ctrl+C 信号
+trap 'echo -e "\n${YELLOW}⚠️ 收到中断信号，正在退出...${NC}"; exit 0' INT
+
+# 运行主函数
+main 

@@ -83,9 +83,9 @@ pub struct EnhancedDisplay {
 
 impl EnhancedDisplay {
     /// 创建新的增强显示管理器
-    pub fn new(memory_monitor: Arc<MemoryMonitor>, max_log_entries: usize) -> Self {
+    pub fn new(memory_monitor: Arc<MemoryMonitor>, max_log_entries: usize, filename: Option<&str>) -> Self {
         // 初始化证明统计管理器
-        let proof_stats_manager = match crate::proof_stats::get_proof_stats_path() {
+        let proof_stats_manager = match crate::proof_stats::get_proof_stats_path(filename) {
             Ok(path) => {
                 match ProofStatsManager::load_from_file(&path) {
                     Ok(manager) => {

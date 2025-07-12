@@ -234,13 +234,24 @@ impl ProofStatsManager {
 }
 
 /// 获取证明统计文件路径
-pub fn get_proof_stats_path() -> Result<PathBuf, io::Error> {
+pub fn get_proof_stats_path(filename: Option<&str>) -> Result<PathBuf, io::Error> {
     let home_path = home::home_dir().ok_or(io::Error::new(
         io::ErrorKind::NotFound,
         "Home directory not found",
     ))?;
-    let stats_path = home_path.join(".nexus").join("proof_stats.json");
+    
+    let stats_filename = match filename {
+        Some(name) => format!("proof_stats_{}.json", name),
+        None => "proof_stats.json".to_string(),
+    };
+    
+    let stats_path = home_path.join(".nexus").join(stats_filename);
     Ok(stats_path)
+}
+
+/// 获取默认证明统计文件路径（向后兼容）
+pub fn get_default_proof_stats_path() -> Result<PathBuf, io::Error> {
+    get_proof_stats_path(None)
 }
 
 #[cfg(test)]
