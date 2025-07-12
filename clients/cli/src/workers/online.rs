@@ -764,7 +764,7 @@ async fn handle_submission_success(
 ) {
     successful_tasks.insert(task.task_id.clone()).await;
     let msg = format!(
-        "[Task step 3 of 3] Proof submitted (Task ID: {}) Points for this node will be updated in https://app.nexus.xyz/rewards within 10 minutes",
+        "[Task step 3 of 3] Proof submitted (Task ID: {}) Points will be updated within 10 minutes",
         task.task_id
     );
     let _ = event_sender

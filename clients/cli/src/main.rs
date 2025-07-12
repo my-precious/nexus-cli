@@ -263,6 +263,14 @@ enum Command {
         /// 启用详细错误日志记录
         #[arg(long)]
         verbose: bool,
+
+        /// 定时重启间隔(分钟)，0表示不重启
+        #[arg(long, default_value = "0")]
+        restart_interval_minutes: u64,
+
+        /// 重启前等待时间(秒)，用于优雅关闭
+        #[arg(long, default_value = "30")]
+        restart_grace_period: u64,
     },
     /// 注册新用户
     RegisterUser {
@@ -301,10 +309,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
             start_delay,
             max_concurrent,
             verbose,
+            restart_interval_minutes,
+            restart_grace_period,
         } => {
             if verbose {
             }
-            start_batch_from_file_optimized(&file, Environment::default(), start_delay, max_concurrent, verbose).await
+            start_batch_from_file_with_restart(
+                &file, 
+                Environment::default(), 
+                start_delay, 
+                max_concurrent, 
+                verbose,
+                restart_interval_minutes,
+                restart_grace_period,
+            ).await
         },
         Command::Logout => {
             println!("Logging out and clearing node configuration file...");
@@ -701,4 +719,337 @@ async fn start_batch_from_file_optimized(
 
     println!("🎉 Optimized batch processing completed successfully!");
     Ok(())
+}
+
+/// 带定时重启功能的批量启动函数
+async fn start_batch_from_file_with_restart(
+    file_path: &str,
+    env: Environment,
+    start_delay: u64,
+    max_concurrent: usize,
+    verbose: bool,
+    restart_interval_minutes: u64,
+    restart_grace_period: u64,
+) -> Result<(), Box<dyn Error>> {
+    // 如果重启间隔为0，则使用普通的批量启动
+    if restart_interval_minutes == 0 {
+        return start_batch_from_file_optimized(file_path, env, start_delay, max_concurrent, verbose).await;
+    }
+
+    println!("🔄 启用定时重启功能");
+    println!("⏰ 重启间隔: {} 分钟", restart_interval_minutes);
+    println!("⏳ 优雅关闭等待时间: {} 秒", restart_grace_period);
+    println!("═══════════════════════════════════════");
+
+    let restart_interval = std::time::Duration::from_secs(restart_interval_minutes * 60);
+    let grace_period = std::time::Duration::from_secs(restart_grace_period);
+    let mut restart_count = 0;
+
+    loop {
+        restart_count += 1;
+        let start_time = std::time::Instant::now();
+        
+        println!("🚀 第 {} 次启动 - 开始时间: {}", restart_count, chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
+        println!("═══════════════════════════════════════");
+
+        // 创建重启信号通道
+        let (restart_sender, mut restart_receiver) = broadcast::channel::<()>(1);
+        let restart_sender_clone = restart_sender.clone();
+
+        // 启动定时重启任务
+        let restart_interval_clone = restart_interval;
+        tokio::spawn(async move {
+            tokio::time::sleep(restart_interval_clone).await;
+            println!("\n⏰ 定时重启时间到！准备重启...");
+            let _ = restart_sender_clone.send(());
+        });
+
+        // 启动批量处理（带重启信号）
+        let result = start_batch_with_restart_signal(
+            file_path,
+            env.clone(),
+            start_delay,
+            max_concurrent,
+            verbose,
+            restart_receiver,
+        ).await;
+
+        let run_duration = start_time.elapsed();
+        println!("\n📊 第 {} 次运行统计:", restart_count);
+        println!("   ⏱️  运行时长: {} 小时 {} 分钟 {} 秒", 
+            run_duration.as_secs() / 3600,
+            (run_duration.as_secs() % 3600) / 60,
+            run_duration.as_secs() % 60
+        );
+
+        match result {
+            Ok(_) => {
+                println!("✅ 第 {} 次运行正常完成", restart_count);
+            }
+            Err(e) => {
+                println!("❌ 第 {} 次运行出错: {}", restart_count, e);
+            }
+        }
+
+        // 检查是否应该继续重启
+        if restart_interval_minutes == 0 {
+            println!("🛑 重启间隔为0，停止重启循环");
+            break;
+        }
+
+        println!("\n🔄 准备第 {} 次重启...", restart_count + 1);
+        println!("⏳ 等待 {} 秒后开始下一次运行...", grace_period.as_secs());
+        
+        // 优雅关闭等待时间
+        tokio::time::sleep(grace_period).await;
+        
+        println!("═══════════════════════════════════════");
+    }
+
+    println!("🎉 定时重启循环完成！总共运行了 {} 次", restart_count);
+    Ok(())
+}
+
+/// 带重启信号的批量启动函数
+async fn start_batch_with_restart_signal(
+    file_path: &str,
+    env: Environment,
+    start_delay: u64,
+    max_concurrent: usize,
+    verbose: bool,
+    mut restart_receiver: broadcast::Receiver<()>,
+) -> Result<(), Box<dyn Error>> {
+    // 加载节点列表
+    let node_list = NodeList::load_from_file(file_path)?;
+    let all_nodes = node_list.node_ids().to_vec();
+
+    if all_nodes.is_empty() {
+        return Err("Node list is empty".into());
+    }
+
+    println!("🚀 Starting batch processing with restart signal support");
+    println!("📊 Total nodes: {}", all_nodes.len());
+    println!("🔄 Max concurrent: {}", max_concurrent);
+    println!("⏱️  Start delay: {}s", start_delay);
+    println!("🌍 Environment: {:?}", env);
+    println!("🧠 Memory-based auto-scaling enabled");
+    println!("═══════════════════════════════════════");
+
+    // 创建内存监控器
+    let mut memory_config = memory_monitor::MemoryConfig::default();
+    memory_config.max_nodes = max_concurrent;
+    let memory_monitor = Arc::new(memory_monitor::MemoryMonitor::new(memory_config));
+
+    // 启动内存监控
+    memory_monitor.start_monitoring().await.map_err(|e| format!("Failed to start memory monitoring: {}", e))?;
+
+    // 创建增强显示管理器
+    let display = Arc::new(enhanced_display::EnhancedDisplay::new(
+        memory_monitor.clone(),
+        20, // 最大日志条目数
+    ));
+
+    // 创建动态节点管理器配置
+    let manager_config = dynamic_node_manager::DynamicNodeManagerConfig {
+        min_start_interval: 1, // 初始启动间隔固定为1秒，不受start_delay影响
+        max_start_interval: start_delay * 3, // 最大启动间隔为原始延迟的3倍
+        initial_nodes: std::cmp::min(2, max_concurrent), // 初始启动2个节点
+        max_nodes: all_nodes.len(), // 最大节点数不超过实际可用节点数
+    };
+
+    // 创建动态节点管理器
+    let node_manager = Arc::new(dynamic_node_manager::DynamicNodeManager::new(
+        all_nodes.clone(),
+        memory_monitor.clone(),
+        Some(manager_config),
+    ));
+
+    // 启动动态节点管理器
+    let display_clone = display.clone();
+    let env_clone = env.clone();
+    let verbose_clone = verbose;
+
+    node_manager.start_manager(move |node_id, shutdown_sender| {
+        let display = display_clone.clone();
+        let env = env_clone.clone();
+        let verbose = verbose_clone;
+
+        async move {
+            // 记录节点启动日志
+            display.add_scaling_log(
+                enhanced_display::ScalingOperation::NodeStarted,
+                Some(node_id),
+                "Node started by dynamic manager".to_string(),
+            ).await;
+
+            // 立即设置节点初始状态，确保显示界面能看到该节点
+            display.update_node_status(node_id, "🚀 Starting...".to_string()).await;
+
+            // 创建签名密钥
+            let mut csprng = rand_core::OsRng;
+            let signing_key: SigningKey = SigningKey::generate(&mut csprng);
+
+            let orchestrator_client = OrchestratorClient::new(env);
+
+            // 启动认证工作线程
+            let (mut event_receiver, join_handles) = start_authenticated_workers(
+                node_id,
+                signing_key,
+                orchestrator_client,
+                1, // 每个节点单线程
+                shutdown_sender.subscribe(),
+                env,
+                node_id.to_string(),
+            ).await;
+
+            // 立即发送一个初始状态事件，确保节点显示
+            let _ = event_receiver.try_recv(); // 清空可能的事件
+            display.update_node_status(node_id, "🔄 Workers started, waiting for tasks...".to_string()).await;
+
+            // 处理事件
+            let mut shutdown_receiver = shutdown_sender.subscribe();
+
+            loop {
+                tokio::select! {
+                    Some(event) = event_receiver.recv() => {
+                        let event_str = event.to_string();
+                        display.update_node_status(node_id, event_str.clone()).await;
+
+                        if verbose {
+                            println!("[Node-{}] {}", node_id, event_str);
+                        }
+                    }
+                    _ = shutdown_receiver.recv() => {
+                        // 收到优雅关闭信号
+                        display.add_scaling_log(
+                            enhanced_display::ScalingOperation::NodeStopped,
+                            Some(node_id),
+                            "Graceful shutdown signal received".to_string(),
+                        ).await;
+                        // 主动上报 "Stopped" 状态，触发 EnhancedDisplay 移除节点
+                        display.update_node_status(node_id, "Stopped".to_string()).await;
+                        break;
+                    }
+                }
+            }
+
+            // 等待所有工作线程完成
+            for handle in join_handles {
+                let _ = handle.await;
+            }
+        }
+    }).await;
+
+    // 等待一小段时间让初始节点启动
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    println!("✅ Dynamic node manager started!");
+    println!("🛑 Press Ctrl+C to gracefully stop all nodes");
+    println!("⏰ 定时重启已启用，将自动重启");
+
+    // 设置Ctrl+C信号处理
+    let node_manager_clone = node_manager.clone();
+    let display_clone = display.clone();
+
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            println!("\n🛑 Ctrl+C received. Starting graceful shutdown...");
+
+            // 记录优雅关闭日志
+            display_clone.add_scaling_log(
+                enhanced_display::ScalingOperation::EmergencyScaleDown,
+                None,
+                "Ctrl+C received, graceful shutdown initiated".to_string(),
+            ).await;
+
+            // 停止节点管理器
+            node_manager_clone.stop_manager().await;
+
+            // 优雅关闭所有节点
+            node_manager_clone.graceful_shutdown_all().await;
+
+            println!("✅ All nodes gracefully stopped.");
+        }
+    });
+
+    // 主循环：监控和显示状态，同时监听重启信号
+    loop {
+        tokio::select! {
+            // 监听重启信号
+            _ = restart_receiver.recv() => {
+                println!("\n🔄 收到重启信号，开始优雅关闭...");
+                
+                // 记录重启日志
+                display.add_scaling_log(
+                    enhanced_display::ScalingOperation::EmergencyScaleDown,
+                    None,
+                    "Restart signal received, graceful shutdown initiated".to_string(),
+                ).await;
+
+                // 停止节点管理器
+                node_manager.stop_manager().await;
+
+                // 优雅关闭所有节点
+                node_manager.graceful_shutdown_all().await;
+
+                println!("✅ 优雅关闭完成，准备重启");
+                break;
+            }
+            
+            // 定期检查状态
+            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+                let active_count = node_manager.active_count().await;
+                let pending_count = node_manager.pending_count().await;
+
+                // 检查是否所有节点都已处理完毕
+                if active_count == 0 && pending_count == 0 {
+                    println!("✅ All nodes have been processed.");
+                    break;
+                }
+
+                // 检查节点管理器是否还在运行
+                if !node_manager.is_monitoring().await {
+                    println!("⚠️ Node manager has stopped.");
+                    break;
+                }
+            }
+        }
+    }
+
+    // 停止内存监控
+    memory_monitor.stop_monitoring();
+
+    println!("🎉 Batch processing cycle completed!");
+    Ok(())
+}
+
+#[cfg(test)]
+mod restart_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_restart_interval_zero() {
+        // 测试重启间隔为0时，应该使用普通批量启动
+        let result = start_batch_from_file_with_restart(
+            "test_file.txt",
+            Environment::default(),
+            10,
+            50,
+            false,
+            0, // 重启间隔为0
+            30,
+        ).await;
+        
+        // 由于文件不存在，应该返回错误，但不会进入重启循环
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_restart_interval_calculation() {
+        // 测试重启间隔计算
+        let minutes = 1440; // 24小时 = 1440分钟
+        let expected_seconds = minutes * 60;
+        let calculated_seconds = std::time::Duration::from_secs(minutes * 60).as_secs();
+        assert_eq!(calculated_seconds, expected_seconds);
+    }
 }
