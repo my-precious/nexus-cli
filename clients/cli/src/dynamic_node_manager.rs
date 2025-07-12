@@ -256,10 +256,10 @@ impl DynamicNodeManager {
                 // println!("🔍 DEBUG: suggested = {}, adjusted_suggested = {}, current_count = {}, pending_count = {}", 
                 //          suggested, adjusted_suggested, current_count, pending_count);
                 
-                // 检查周期 - 使用内存监控器的检查间隔
-                let check_interval = memory_monitor.config().check_interval;
-                println!("⏰ Next scaling check in {}s", check_interval);
-                sleep(Duration::from_secs(check_interval)).await;
+                // 检查周期 - 
+                // let check_interval = config.start_interval;
+                // println!("⏰ Next scaling check in {}s", check_interval);
+                sleep(Duration::from_secs(config.start_interval)).await;
             }
         });
     }
