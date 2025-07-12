@@ -17,8 +17,6 @@ pub struct NodeHandle {
 /// 动态节点管理器配置
 #[derive(Debug, Clone)]
 pub struct DynamicNodeManagerConfig {
-    pub min_start_interval: u64, // 最小启动间隔（秒）
-    pub max_start_interval: u64, // 最大启动间隔（秒）
     pub initial_nodes: usize,    // 初始启动节点数
     pub max_nodes: usize,         // 最大节点数
     pub start_interval: u64,      // 节点启动间隔（秒）
@@ -27,9 +25,7 @@ pub struct DynamicNodeManagerConfig {
 impl Default for DynamicNodeManagerConfig {
     fn default() -> Self {
         Self {
-            min_start_interval: 2,
-            max_start_interval: 10,
-            initial_nodes: 2,
+            initial_nodes: 5,
             max_nodes: usize::MAX,
             start_interval: 3,      // 默认3秒启动间隔
         }
@@ -256,10 +252,10 @@ impl DynamicNodeManager {
                 // println!("🔍 DEBUG: suggested = {}, adjusted_suggested = {}, current_count = {}, pending_count = {}", 
                 //          suggested, adjusted_suggested, current_count, pending_count);
                 
-                // 检查周期 - 
-                // let check_interval = config.start_interval;
-                // println!("⏰ Next scaling check in {}s", check_interval);
-                sleep(Duration::from_secs(config.start_interval)).await;
+                // 检查周期 - 使用配置的启动间隔
+                let check_interval = config.start_interval;
+                println!("⏰ == Next scaling check in {}s", check_interval);
+                sleep(Duration::from_secs(check_interval)).await;
             }
         });
     }
@@ -327,8 +323,6 @@ mod tests {
         let memory_monitor = Arc::new(MemoryMonitor::new_default());
         let all_nodes = vec![1, 2, 3];
         let config = DynamicNodeManagerConfig {
-            min_start_interval: 1,
-            max_start_interval: 2,
             initial_nodes: 2,
             max_nodes: usize::MAX,
             start_interval: 1,
@@ -381,8 +375,6 @@ mod tests {
         let memory_monitor = Arc::new(MemoryMonitor::new_default());
         let all_nodes = vec![1, 2, 3];
         let config = DynamicNodeManagerConfig {
-            min_start_interval: 1,
-            max_start_interval: 2,
             initial_nodes: 2,
             max_nodes: usize::MAX,
             start_interval: 1,
