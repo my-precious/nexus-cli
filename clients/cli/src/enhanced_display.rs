@@ -204,10 +204,52 @@ impl EnhancedDisplay {
         if cleaned_msg != status {
             cleaned_msg
         } else {
-            // 否则根据事件类型添加 emoji
+            // 根据事件类型添加 emoji，并移除状态中的事件类型文本
             let event_type = Self::determine_event_type(status);
             let emoji = Self::get_event_emoji(&event_type);
-            format!("{} {}", emoji, status)
+            
+            // 移除状态中的事件类型文本，避免重复
+            let cleaned_status = match event_type {
+                EventType::Success => {
+                    let temp = status.replace("Success", "").replace("successfully", "");
+                    temp.trim().to_string()
+                },
+                EventType::Error => {
+                    let temp = status.replace("Error", "").replace("error", "").replace("Failed", "").replace("failed", "");
+                    temp.trim().to_string()
+                },
+                EventType::Refresh => {
+                    let temp = status.replace("Refresh", "");
+                    temp.trim().to_string()
+                },
+                EventType::Shutdown => {
+                    let temp = status.replace("Shutdown", "").replace("Stopped", "");
+                    temp.trim().to_string()
+                },
+            };
+            
+            // 如果清理后的状态为空或只包含标点符号，使用原始状态
+            let final_status = if cleaned_status.is_empty() || cleaned_status.chars().all(|c| c.is_whitespace() || c == ':') {
+                status
+            } else {
+                &cleaned_status
+            };
+            
+            // 截取状态信息到最大长度（比如80个字符）
+            let max_length = 100;
+            let truncated_status = if final_status.len() > max_length {
+                let truncated = &final_status[..max_length];
+                // 确保不在单词中间截断
+                if let Some(last_space) = truncated.rfind(' ') {
+                    format!("{}...", &truncated[..last_space])
+                } else {
+                    format!("{}...", truncated)
+                }
+            } else {
+                final_status.to_string()
+            };
+            
+            format!("{}{}", emoji, truncated_status)
         }
     }
 
@@ -439,7 +481,7 @@ impl EnhancedDisplay {
         // 分页显示
         for (node_id, status) in node_statuses.iter().skip(start_idx).take(nodes_per_page) {
             let proof_count = self.proof_stats_manager.read().await.get_node_count(*node_id);
-            println!("   Node-{:>8} (Proofs: {:>3}): {}", node_id, proof_count, status);
+            println!("Node-{:>8} (Proofs: {:>3}): {}", node_id, proof_count, status);
         }
     }
 

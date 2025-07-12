@@ -574,7 +574,7 @@ async fn start_batch_from_file_optimized(
     let manager_config = dynamic_node_manager::DynamicNodeManagerConfig {
         initial_nodes: std::cmp::min(5, max_concurrent), // 初始启动节点数
         max_nodes: all_nodes.len(), // 最大节点数不超过实际可用节点数
-        start_interval: 3, // 固定3秒启动间隔
+        start_interval: 2, // 固定3秒启动间隔
     };
 
     // 创建动态节点管理器
