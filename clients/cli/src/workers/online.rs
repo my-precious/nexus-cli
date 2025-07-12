@@ -186,7 +186,7 @@ async fn attempt_task_fetch(
 ) -> Result<(), bool> {
     let _ = event_sender
         .send(Event::task_fetcher_with_level(
-            "[Task step 1 of 3] Fetching tasks...Note: CLI tasks are harder to solve, so they receive 10 times more points than web provers".to_string(),
+            "[Task step 1/3] Fetching tasks...".to_string(),
             crate::events::EventType::Refresh,
             LogLevel::Debug,
         ))
@@ -734,24 +734,44 @@ async fn process_proof_submission(
     let proof_bytes = postcard::to_allocvec(&proof).expect("Failed to serialize proof");
     let proof_hash = format!("{:x}", Keccak256::digest(&proof_bytes));
 
-    // Submit to orchestrator
-    match orchestrator
-        .submit_proof(
-            &task.task_id,
-            &proof_hash,
-            proof_bytes,
-            signing_key.clone(),
-            num_workers,
-        )
-        .await
-    {
-        Ok(_) => {
-            handle_submission_success(&task, event_sender, successful_tasks).await;
-            Some(true)
-        }
-        Err(e) => {
-            handle_submission_error(&task, e, event_sender).await;
-            Some(false)
+    // 提交重试机制
+    let mut attempts = 0;
+    let max_attempts = 5;
+    loop {
+        attempts += 1;
+        match orchestrator
+            .submit_proof(
+                &task.task_id,
+                &proof_hash,
+                proof_bytes.clone(),
+                signing_key.clone(),
+                num_workers,
+            )
+            .await
+        {
+            Ok(_) => {
+                handle_submission_success(&task, event_sender, successful_tasks).await;
+                return Some(true);
+            }
+            Err(e) => {
+                if attempts >= max_attempts {
+                    handle_submission_error(&task, e, event_sender).await;
+                    return Some(false);
+                } else {
+                    let msg = format!(
+                        "提交任务 {} 失败（第{}/{}次），正在重试...",
+                        task.task_id, attempts, max_attempts
+                    );
+                    let _ = event_sender
+                        .send(Event::proof_submitter_with_level(
+                            msg,
+                            crate::events::EventType::Error,
+                            LogLevel::Warn,
+                        ))
+                        .await;
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            }
         }
     }
 }
@@ -764,7 +784,7 @@ async fn handle_submission_success(
 ) {
     successful_tasks.insert(task.task_id.clone()).await;
     let msg = format!(
-        "[Task step 3 of 3] Proof submitted (Task ID: {}) Points will be updated within 10 minutes",
+        "[Task step 3/3] Proof submitted (Task ID: {}) Points will be updated within 10 minutes",
         task.task_id
     );
     let _ = event_sender
